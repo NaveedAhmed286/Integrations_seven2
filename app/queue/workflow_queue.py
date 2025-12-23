@@ -3,7 +3,7 @@ Workflow queue for task sequencing only.
 No retry logic here - that's in retry_queue.py.
 """
 import asyncio
-from typing import Callable, Dict, Any, Optional
+from typing import Callable, Dict, Any, Optional, List
 from datetime import datetime
 import uuid
 
