@@ -2,6 +2,9 @@
 Sentry initialization for centralized error tracking.
 Observes reality, never controls logic.
 """
+import logging
+from typing import Dict, Any
+
 import sentry_sdk
 from sentry_sdk.integrations.asyncio import AsyncioIntegration
 from sentry_sdk.integrations.logging import LoggingIntegration
