@@ -14,7 +14,7 @@ from app.readiness import readiness_manager
 from app.sentry import initialize_sentry
 from app.queue.workflow_queue import workflow_queue
 from app.queue.retry_queue import retry_queue
-from app.agents.amazon_agent import AmazonAgent
+from app.agent import AmazonAgent
 
 
 class Application:
