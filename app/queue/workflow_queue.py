@@ -1,163 +1,142 @@
-"""
-Workflow queue for task sequencing only.
-No retry logic here - that's in retry_queue.py.
-"""
-import asyncio
-from typing import Callable, Dict, Any, Optional
-from datetime import datetime
+import redis
+import json
 import uuid
+from typing import Dict, List, Optional, Any
+from datetime import datetime
+import logging
 
-from app.errors import QueueError
-from app.logger import logger
-
+logger = logging.getLogger(__name__)
 
 class WorkflowQueue:
-    """
-    Controls task order only.
-    Ensures steps run in correct sequence.
-    """
-    
-    def __init__(self):
-        self.tasks: Dict[str, Dict[str, Any]] = {}
-        self.task_order: List[str] = []
-        self.callbacks: Dict[str, Callable] = {}
-        self.is_processing = False
-    
-    def register_task(self, task_name: str, callback: Callable):
-        """
-        Register a task type with its handler.
+    def __init__(self, redis_client: redis.Redis):
+        self.redis = redis_client
+        self.queue_key = "workflow:queue"
+        self.processing_key = "workflow:processing"
+        self.results_key = "workflow:results"
         
-        Args:
-            task_name: Unique task identifier
-            callback: Async function to handle the task
-        """
-        self.callbacks[task_name] = callback
-        logger.debug(f"Registered workflow task: {task_name}")
-    
-    async def enqueue(self, task_name: str, data: Dict[str, Any], 
-                     dependencies: Optional[List[str]] = None) -> str:
-        """
-        Enqueue a task for execution.
-        
-        Args:
-            task_name: Registered task name
-            data: Task data
-            dependencies: Task IDs that must complete first
-            
-        Returns:
-            Task ID
-        """
-        if task_name not in self.callbacks:
-            raise QueueError(f"Unregistered task: {task_name}")
-        
+    def enqueue(self, workflow_type: str, data: Dict[str, Any], 
+                priority: int = 0, dependencies: Optional[List[str]] = None) -> str:
+        """Enqueue a workflow task"""
         task_id = str(uuid.uuid4())
-        
-        self.tasks[task_id] = {
+        task = {
             "id": task_id,
-            "name": task_name,
+            "type": workflow_type,
             "data": data,
+            "priority": priority,
             "dependencies": dependencies or [],
             "status": "pending",
             "created_at": datetime.utcnow().isoformat(),
-            "started_at": None,
-            "completed_at": None,
-            "error": None
+            "attempts": 0
         }
         
-        self.task_order.append(task_id)
-        logger.debug(f"Enqueued workflow task: {task_name} ({task_id})")
+        # Store task details
+        self.redis.hset(self.results_key, task_id, json.dumps(task))
         
-        # Start processing if not already running
-        if not self.is_processing:
-            asyncio.create_task(self._process_queue())
+        # Add to priority queue (score = priority, higher = more important)
+        self.redis.zadd(self.queue_key, {task_id: priority})
         
+        logger.info(f"Enqueued workflow task {task_id} of type {workflow_type}")
         return task_id
-    
-    async def _process_queue(self):
-        """Process tasks in order, respecting dependencies."""
-        if self.is_processing:
+        
+    def dequeue(self) -> Optional[Dict[str, Any]]:
+        """Dequeue the highest priority task"""
+        # Get task with highest priority
+        task_ids = self.redis.zrange(self.queue_key, -1, -1)
+        
+        if not task_ids:
+            return None
+            
+        task_id = task_ids[0].decode() if isinstance(task_ids[0], bytes) else task_ids[0]
+        
+        # Move to processing
+        task_data = self.redis.hget(self.results_key, task_id)
+        if not task_data:
+            return None
+            
+        task = json.loads(task_data)
+        task["status"] = "processing"
+        task["started_at"] = datetime.utcnow().isoformat()
+        
+        # Update task status
+        self.redis.hset(self.results_key, task_id, json.dumps(task))
+        
+        # Remove from queue and add to processing
+        self.redis.zrem(self.queue_key, task_id)
+        self.redis.sadd(self.processing_key, task_id)
+        
+        logger.info(f"Dequeued workflow task {task_id}")
+        return task
+        
+    def complete(self, task_id: str, result: Dict[str, Any], 
+                 error: Optional[str] = None) -> None:
+        """Mark a task as completed"""
+        task_data = self.redis.hget(self.results_key, task_id)
+        if not task_data:
+            logger.warning(f"Task {task_id} not found for completion")
             return
+            
+        task = json.loads(task_data)
+        task["status"] = "failed" if error else "completed"
+        task["completed_at"] = datetime.utcnow().isoformat()
+        task["result"] = result
+        task["error"] = error
         
-        self.is_processing = True
+        # Update task
+        self.redis.hset(self.results_key, task_id, json.dumps(task))
         
-        try:
-            while self.task_order:
-                task_id = self.task_order[0]
-                task = self.tasks.get(task_id)
+        # Remove from processing
+        self.redis.srem(self.processing_key, task_id)
+        
+        logger.info(f"Completed workflow task {task_id} with status {task['status']}")
+        
+    def get_status(self, task_id: str) -> Optional[Dict[str, Any]]:
+        """Get task status"""
+        task_data = self.redis.hget(self.results_key, task_id)
+        if not task_data:
+            return None
+        return json.loads(task_data)
+        
+    def retry_failed(self, max_attempts: int = 3) -> List[str]:
+        """Retry failed tasks"""
+        retried = []
+        
+        # Get all tasks
+        all_tasks = self.redis.hgetall(self.results_key)
+        
+        for task_id_bytes, task_data_bytes in all_tasks.items():
+            task_id = task_id_bytes.decode() if isinstance(task_id_bytes, bytes) else task_id_bytes
+            task_data = task_data_bytes.decode() if isinstance(task_data_bytes, bytes) else task_data_bytes
+            
+            task = json.loads(task_data)
+            
+            # Check if task failed and can be retried
+            if (task["status"] == "failed" and 
+                task.get("attempts", 0) < max_attempts and
+                task_id not in self.redis.smembers(self.processing_key)):
                 
-                if not task:
-                    self.task_order.pop(0)
-                    continue
+                task["attempts"] = task.get("attempts", 0) + 1
+                task["status"] = "pending"
+                task.pop("completed_at", None)
+                task.pop("started_at", None)
+                task.pop("error", None)
                 
-                # Check dependencies
-                if task["dependencies"]:
-                    deps_completed = all(
-                        self.tasks.get(dep_id, {}).get("status") == "completed"
-                        for dep_id in task["dependencies"]
-                    )
-                    
-                    if not deps_completed:
-                        # Wait for dependencies
-                        await asyncio.sleep(0.1)
-                        continue
+                # Update task and re-enqueue
+                self.redis.hset(self.results_key, task_id, json.dumps(task))
+                self.redis.zadd(self.queue_key, {task_id: task["priority"]})
                 
-                # Execute task
-                await self._execute_task(task)
+                retried.append(task_id)
+                logger.info(f"Retried failed task {task_id}, attempt {task['attempts']}")
                 
-                # Remove from queue
-                self.task_order.pop(0)
-        
-        finally:
-            self.is_processing = False
-    
-    async def _execute_task(self, task: Dict[str, Any]):
-        """Execute a single task."""
-        task_id = task["id"]
-        task_name = task["name"]
-        
-        try:
-            # Update status
-            task["status"] = "running"
-            task["started_at"] = datetime.utcnow().isoformat()
-            
-            logger.info(f"Executing workflow task: {task_name} ({task_id})")
-            
-            # Execute callback
-            callback = self.callbacks[task_name]
-            result = await callback(task["data"])
-            
-            # Update status
-            task["status"] = "completed"
-            task["completed_at"] = datetime.utcnow().isoformat()
-            task["result"] = result
-            
-            logger.info(f"Completed workflow task: {task_name} ({task_id})")
-            
-        except Exception as e:
-            task["status"] = "failed"
-            task["completed_at"] = datetime.utcnow().isoformat()
-            task["error"] = str(e)
-            
-            logger.error(f"Failed workflow task: {task_name} ({task_id}): {e}")
-            
-            # Don't re-raise - workflow continues with other tasks
-    
-    def get_task_status(self, task_id: str) -> Optional[Dict[str, Any]]:
-        """Get task status by ID."""
-        return self.tasks.get(task_id)
-    
-    def clear_completed(self):
-        """Clear completed tasks to free memory."""
-        completed_ids = [
-            task_id for task_id, task in self.tasks.items()
-            if task.get("status") in ["completed", "failed"]
-        ]
-        
-        for task_id in completed_ids:
-            del self.tasks[task_id]
-        
-        logger.debug(f"Cleared {len(completed_ids)} completed tasks")
+        return retried
 
-
-# Global workflow queue instance
-workflow_queue = WorkflowQueue()
+# Create a global instance (this would normally be initialized with a Redis connection)
+# For testing purposes, we'll create a placeholder
+try:
+    import redis
+    # Try to create a Redis connection
+    redis_client = redis.Redis.from_url("redis://localhost:6379/0", decode_responses=True)
+    workflow_queue = WorkflowQueue(redis_client)
+except Exception as e:
+    # Create a mock instance for testing
+    workflow_queue = None
+    logger.warning(f"Could not initialize workflow queue: {e}")

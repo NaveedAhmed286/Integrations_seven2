@@ -18,7 +18,7 @@ def test_imports():
         "app.normalizers.amazon",
         "app.services.apify_service",
         "app.services.google_service",
-        "app.memory.memory_manager",
+        "app.memory_manager",
         "app.queue.workflow_queue",
         "app.queue.retry_queue",
         "app.utils.retry",

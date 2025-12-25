@@ -13,7 +13,7 @@ from app.errors import ExternalServiceError, NetworkError
 from app.utils.retry import async_retry, idempotent_operation
 from app.config import config
 from app.logger import logger
-from app.memory.memory_manager import memory_manager
+from app.memory_manager import memory_manager
 
 
 class AIService:
