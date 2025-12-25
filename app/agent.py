@@ -10,7 +10,7 @@ from app.config import config
 from app.logger import logger
 from app.models.product import AmazonProduct
 from app.normalizers.amazon import AmazonNormalizer
-from app.memory.memory_manager import memory_manager
+from app.memory_manager import memory_manager
 from app.queue.workflow_queue import workflow_queue
 from app.queue.retry_queue import retry_queue
 from app.services.apify_service import apify_service
