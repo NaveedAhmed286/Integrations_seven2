@@ -65,7 +65,7 @@ async def health_check():
     """Health check endpoint."""
     services = {
         "apify": apify_service.is_available,
-        "memory": memory_manager.is_initialized,
+        "memory": memory_manager.initialized,
         "redis": redis_client.ping() if redis_client else False
     }
     
