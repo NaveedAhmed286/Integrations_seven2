@@ -135,3 +135,5 @@ async def get_memory_context(client_id: str):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+from app.health import router as health_router
+app.include_router(health_router)

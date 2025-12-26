@@ -17,7 +17,7 @@ from app.errors import ExternalServiceError, NetworkError
 
 class MockConfig:
     """Mock configuration for testing."""
-    APIFY_API_KEY = "test-mock-api-key-for-testing-only"
+    APIFY_TOKEN = os.getenv("APIFY_TOKEN", "test-placeholder")
     REQUEST_TIMEOUT = 30
     MAX_RETRIES = 3
 
