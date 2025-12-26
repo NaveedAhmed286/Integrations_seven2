@@ -5,8 +5,8 @@ import asyncio
 import signal
 import sys
 from contextlib import asynccontextmanager
+from datetime import datetime  # ADDED: Needed for timestamp
 
-import redis
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 
@@ -22,9 +22,6 @@ from app.models.product import AmazonProduct
 apify_service = ApifyService()
 memory_manager = MemoryManager()
 normalizer = AmazonNormalizer()
-
-# Initialize Redis connection for queues
-redis_client = redis.Redis.from_url(config.REDIS_URL, decode_responses=True)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -57,21 +54,36 @@ async def root():
     return {
         "service": "Amazon Scraper System",
         "version": "1.0.0",
-        "status": "operational"
+        "status": "operational",
+        "timestamp": datetime.utcnow().isoformat()
     }
 
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
+    # Check Redis connection asynchronously
+    redis_available = False
+    if memory_manager.short_term.redis and memory_manager.short_term.is_available:
+        try:
+            await memory_manager.short_term.redis.ping()
+            redis_available = True
+        except Exception as e:
+            logger.warning(f"Redis ping failed: {e}")
+            redis_available = False
+    
     services = {
         "apify": apify_service.is_available,
-        "memory": memory_manager.initialized,
-        "redis": redis_client.ping() if redis_client else False
+        "memory": memory_manager.initialized,  # FIXED: is_initialized → initialized
+        "redis": redis_available,
+        "postgres": memory_manager.long_term.is_available
     }
     
+    status = "healthy" if all(services.values()) else "degraded"
+    
     return {
-        "status": "healthy" if all(services.values()) else "degraded",
-        "services": services
+        "status": status,
+        "services": services,
+        "timestamp": datetime.utcnow().isoformat()
     }
 
 @app.post("/api/v1/search")
@@ -101,11 +113,13 @@ async def search_amazon(request: Request):
                 logger.warning(f"Failed to normalize product: {e}")
                 continue
         
-        # Store in memory
-        await memory_manager.store_episodic_memory(
+        # Store in episodic memory - FIXED: store_episodic_memory → store_episodic
+        memory_manager.store_episodic(
             client_id="api",
-            action="search",
-            details={"keyword": keyword, "domain": domain, "results_count": len(normalized_results)}
+            analysis_type="search",
+            input_data={"keyword": keyword, "domain": domain},
+            output_data={"results_count": len(normalized_results)},
+            insights=[f"Found {len(normalized_results)} products for '{keyword}'"]
         )
         
         return {
