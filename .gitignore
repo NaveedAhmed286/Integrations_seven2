@@ -44,3 +44,4 @@ htmlcov/
 .mypy_cache/
 .env.test
 .env.test
+.env
