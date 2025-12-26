@@ -45,3 +45,6 @@ htmlcov/
 .env.test
 .env.test
 .env
+.env
+.env.local
+.env.*
