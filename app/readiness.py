@@ -36,7 +36,7 @@ class ReadinessManager:
         
         # Initialize memory system
         try:
-            from app.memory.memory_manager import memory_manager
+            from app.memory_manager import memory_manager
             await memory_manager.initialize()
             self.services["memory"] = memory_manager.short_term.is_available or \
                                      memory_manager.long_term.is_available
