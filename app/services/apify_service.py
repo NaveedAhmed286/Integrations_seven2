@@ -24,7 +24,7 @@ class ApifyService:
     def __init__(self):
         self.api_key = config.APIFY_API_KEY
         self.base_url = "https://api.apify.com/v2"
-        self.actor_name = os.getenv("APIFY_ACTOR_NAME", "scraper-engine~amazon-search-scraper")
+        self.actor_name = os.getenv("APIFY_ACTOR_NAME", "junglee~free-amazon-product-scraper")
         self.session: Optional[aiohttp.ClientSession] = None
         self.is_available = bool(self.api_key)
     
@@ -52,7 +52,7 @@ class ApifyService:
     async def scrape_amazon_search(self, keyword: str, domain: str = "com", 
                                    max_results: int = 10) -> List[Dict[str, Any]]:
         """
-        Scrape Amazon search results via Apify.
+        Scrape Amazon using junglee/free-amazon-product-scraper.
         
         Args:
             keyword: Search keyword
@@ -70,21 +70,29 @@ class ApifyService:
             raise ExternalServiceError("Apify service not configured")
         
         try:
-            # Prepare Apify actor input for scraper-engine/amazon-search-scraper
+            # junglee actor expects category/search URLs
+            # Create Amazon search URL with keyword
+            search_url = f"https://www.amazon.{domain}/s?k={keyword.replace(' ', '+')}"
+            
+            # Input format for junglee/free-amazon-product-scraper
             actor_input = {
-                "searchUrlsOrKeywords": [keyword],
-                "maxResults": max_results,
-                "resultsPerPage": 10,
-                "sortBy": "RELEVANCE",
-                "proxyConfig": {
+                "startUrls": [{
+                    "url": search_url
+                }],
+                "maxResultsPerStartUrl": max_results,
+                "proxyConfiguration": {
                     "useApifyProxy": True,
                     "apifyProxyGroups": ["RESIDENTIAL"]
-                }
+                },
+                "maxConcurrency": 1,
+                "includeReviews": False,
+                "includeQAndA": False
             }
             
-            logger.debug(f"Calling Apify actor: {self.actor_name} with input: {actor_input}")
+            logger.info(f"Scraping Amazon for keyword: {keyword}")
+            logger.debug(f"Actor input: {actor_input}")
             
-            # Start actor run - FIXED: Using correct actor name
+            # Start actor run
             start_response = await self.session.post(
                 f"{self.base_url}/acts/{self.actor_name}/run-sync-get-dataset-items",
                 json={"input": actor_input},
@@ -101,17 +109,22 @@ class ApifyService:
             # Parse response
             results = await start_response.json()
             
-            # Validate response structure - scraper-engine returns items in "items" field
-            if isinstance(results, dict) and "items" in results:
-                items = results["items"]
-            elif isinstance(results, list):
+            # junglee actor returns items in array format
+            if isinstance(results, list):
                 items = results
+            elif isinstance(results, dict) and "items" in results:
+                items = results["items"]
             else:
                 logger.warning(f"Unexpected response format: {type(results)}")
                 items = []
             
             if not isinstance(items, list):
                 raise ExternalServiceError("Invalid response format from Apify")
+            
+            # Add keyword to each result for tracking
+            for item in items:
+                item["keyword"] = keyword
+                item["domain"] = domain
             
             logger.info(f"Scraped {len(items)} products for keyword: {keyword}")
             return items
