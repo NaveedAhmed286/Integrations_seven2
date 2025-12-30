@@ -1,30 +1,29 @@
 """
 Explicit normalization layer.
-Converts raw scraper output into safe internal model.
-No external data bypasses this layer.
+Converts junglee/free-amazon-product-scraper output into safe internal model.
 """
 import re
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 
 from app.errors import NormalizationError
-from app.models.product import AmazonProduct, SimilarKeyword
+from app.models.product import AmazonProduct
 
 
 class AmazonNormalizer:
     """
     Normalizes raw Amazon scraper data into internal model.
-    Fixes types, applies defaults, removes malformed fields.
+    Handles junglee/free-amazon-product-scraper output format.
     """
     
     @staticmethod
     def normalize_product(raw_product: Dict[str, Any]) -> AmazonProduct:
         """
-        Convert raw scraper product to internal model.
+        Convert junglee scraper product to internal model.
         
-        Args:
-            raw_product: Raw JSON from Amazon scraper
-            
+        Expected fields from junglee:
+        - title, price, rating, url, asin, availability, image, etc.
+        
         Returns:
             Normalized AmazonProduct
             
@@ -32,141 +31,158 @@ class AmazonNormalizer:
             NormalizationError: If data cannot be normalized
         """
         try:
-            # Extract and normalize ASIN
-            asin = AmazonNormalizer._normalize_asin(raw_product.get("asin"))
-            
-            # Normalize similar keywords
-            similar_keywords = AmazonNormalizer._normalize_similar_keywords(
-                raw_product.get("similarKeywords", [])
+            # Extract and normalize ASIN from URL or asin field
+            asin = AmazonNormalizer._extract_asin(
+                raw_product.get("asin"),
+                raw_product.get("url", "")
             )
             
-            # Normalize price fields
+            # Normalize price
             price = AmazonNormalizer._normalize_price(raw_product.get("price"))
-            retail_price = AmazonNormalizer._normalize_price(raw_product.get("retailPrice"))
             
-            # Normalize rating (ensure 0-5 range)
-            rating = AmazonNormalizer._normalize_rating(raw_product.get("productRating"))
+            # Normalize rating (extract numeric from string like "4.4 out of 5 stars")
+            rating = AmazonNormalizer._extract_rating(raw_product.get("rating"))
             
-            # Normalize review count (ensure non-negative)
-            review_count = AmazonNormalizer._normalize_review_count(raw_product.get("countReview"))
+            # Normalize review count if available
+            review_count = AmazonNormalizer._normalize_review_count(
+                raw_product.get("reviewsCount") or raw_product.get("totalReviews")
+            )
             
-            # Create internal model
+            # Normalize availability
+            availability = AmazonNormalizer._normalize_availability(
+                raw_product.get("availability")
+            )
+            
+            # Create internal model - simplified for junglee output
             return AmazonProduct(
-                asin=asin,
+                asin=asin or "UNKNOWN",
                 keyword=raw_product.get("keyword", "").strip(),
-                domain_code=raw_product.get("domainCode", "com"),
-                search_result_position=raw_product.get("searchResultPosition", 999),
+                domain_code=raw_product.get("domain", "com"),
+                search_result_position=raw_product.get("position", 999),
                 count_review=review_count,
                 product_rating=rating,
                 price=price,
-                retail_price=retail_price,
-                img_url=raw_product.get("imgUrl", "").strip(),
-                dp_url=raw_product.get("dpUrl", "").strip(),
+                retail_price=price,  # Use same price if no retail price
+                img_url=raw_product.get("image", "").strip() or raw_product.get("imgUrl", ""),
+                dp_url=raw_product.get("url", "").strip(),
                 sponsored=bool(raw_product.get("sponsored", False)),
-                prime=bool(raw_product.get("prime", False)),
-                product_description=AmazonNormalizer._normalize_description(
-                    raw_product.get("productDescription")
-                ),
+                prime=bool(raw_product.get("prime", False)) or "prime" in str(raw_product.get("delivery", "")).lower(),
+                product_description=raw_product.get("description", "").strip() or None,
                 sales_volume=raw_product.get("salesVolume", "").strip() or None,
-                manufacturer=raw_product.get("manufacturer", "").strip() or None,
-                page=raw_product.get("page", 1),
-                sort_strategy=raw_product.get("sortStrategy", "relevanceblender"),
-                result_count=raw_product.get("resultCount", 0),
-                similar_keywords=similar_keywords,
+                manufacturer=raw_product.get("manufacturer", "").strip() or raw_product.get("brand", "").strip() or None,
+                page=1,
+                sort_strategy="relevance",
+                result_count=0,
+                similar_keywords=[],
                 categories=raw_product.get("categories", []),
                 variations=raw_product.get("variations", []),
                 product_details=raw_product.get("productDetails", []),
+                availability=availability,
                 scraped_at=datetime.utcnow()
             )
             
         except (KeyError, ValueError, TypeError) as e:
             raise NormalizationError(
-                f"Failed to normalize product data: {str(e)}. "
-                f"Raw data: {raw_product.get('asin', 'UNKNOWN_ASIN')}"
+                f"Failed to normalize product: {str(e)}. "
+                f"Data keys: {list(raw_product.keys())}"
             )
     
     @staticmethod
-    def _normalize_asin(raw_asin: Any) -> str:
-        """Normalize ASIN (10 characters, uppercase)."""
-        if not raw_asin:
-            raise ValueError("ASIN is required")
+    def _extract_asin(asin_field: Any, url: str) -> Optional[str]:
+        """Extract ASIN from field or URL."""
+        # Try from asin field first
+        if asin_field:
+            asin_str = str(asin_field).strip().upper()
+            asin_str = re.sub(r'[^A-Z0-9]', '', asin_str)
+            if len(asin_str) == 10:
+                return asin_str
         
-        asin_str = str(raw_asin).strip().upper()
-        # Remove any non-alphanumeric characters
-        asin_str = re.sub(r'[^A-Z0-9]', '', asin_str)
+        # Try to extract from URL (e.g., /dp/B0DWK6GBB8)
+        if url:
+            match = re.search(r'/dp/([A-Z0-9]{10})', url.upper())
+            if match:
+                return match.group(1)
         
-        if len(asin_str) != 10:
-            raise ValueError(f"ASIN must be 10 characters, got: {asin_str}")
-        
-        return asin_str
+        return None
     
     @staticmethod
     def _normalize_price(raw_price: Any) -> Optional[float]:
-        """Normalize price to float or None."""
+        """Normalize price to float."""
         if raw_price is None or raw_price == "":
             return None
         
         try:
-            # Handle string prices like "$29.99" or "29.99"
             if isinstance(raw_price, str):
-                # Remove currency symbols and commas
+                # Remove currency symbols, commas, spaces
                 clean_price = re.sub(r'[^\d.]', '', raw_price)
-                if not clean_price:
-                    return None
-                return float(clean_price)
-            
-            return float(raw_price)
+                if clean_price and clean_price != ".":
+                    return float(clean_price)
+            elif isinstance(raw_price, (int, float)):
+                return float(raw_price)
         except (ValueError, TypeError):
-            return None
+            pass
+        
+        return None
     
     @staticmethod
-    def _normalize_rating(raw_rating: Any) -> float:
-        """Normalize rating to 0-5 range."""
-        try:
-            rating = float(raw_rating or 0)
-            # Ensure rating is between 0 and 5
-            return max(0.0, min(5.0, rating))
-        except (ValueError, TypeError):
+    def _extract_rating(rating_str: Any) -> float:
+        """Extract numeric rating from string."""
+        if not rating_str:
             return 0.0
+        
+        try:
+            if isinstance(rating_str, (int, float)):
+                return max(0.0, min(5.0, float(rating_str)))
+            
+            # Handle "4.4 out of 5 stars" format
+            str_rating = str(rating_str)
+            match = re.search(r'(\d+\.?\d*)', str_rating)
+            if match:
+                rating = float(match.group(1))
+                return max(0.0, min(5.0, rating))
+        except (ValueError, TypeError):
+            pass
+        
+        return 0.0
     
     @staticmethod
     def _normalize_review_count(raw_count: Any) -> int:
-        """Normalize review count to non-negative integer."""
-        try:
-            count = int(raw_count or 0)
-            return max(0, count)
-        except (ValueError, TypeError):
+        """Normalize review count."""
+        if not raw_count:
             return 0
+        
+        try:
+            if isinstance(raw_count, str):
+                # Remove commas and non-digits
+                clean = re.sub(r'[^\d]', '', raw_count)
+                if clean:
+                    return int(clean)
+            else:
+                return int(raw_count)
+        except (ValueError, TypeError):
+            pass
+        
+        return 0
     
     @staticmethod
-    def _normalize_description(raw_description: Any) -> Optional[str]:
-        """Normalize product description."""
-        if not raw_description:
-            return None
+    def _normalize_availability(availability: Any) -> str:
+        """Normalize availability string."""
+        if not availability:
+            return "Unknown"
         
-        desc = str(raw_description).strip()
-        # Remove "No Product Description Found" placeholder
-        if desc.lower() == "no product description found":
-            return None
+        avail_str = str(availability).strip()
         
-        return desc
-    
-    @staticmethod
-    def _normalize_similar_keywords(raw_keywords: List[Dict]) -> List[SimilarKeyword]:
-        """Normalize similar keywords list."""
-        normalized = []
+        # Standardize common availability strings
+        if "in stock" in avail_str.lower():
+            return "In Stock"
+        elif "out of stock" in avail_str.lower():
+            return "Out of Stock"
+        elif "pre-order" in avail_str.lower():
+            return "Pre-order"
+        elif "temporarily" in avail_str.lower():
+            return "Temporarily Unavailable"
         
-        for kw in raw_keywords or []:
-            try:
-                keyword = kw.get("keyword", "").strip()
-                url = kw.get("url", "").strip()
-                
-                if keyword and url:
-                    normalized.append(SimilarKeyword(keyword=keyword, url=url))
-            except (KeyError, AttributeError):
-                continue  # Skip malformed entries
-        
-        return normalized
+        return avail_str
     
     @staticmethod
     def normalize_batch(raw_products: List[Dict[str, Any]]) -> List[AmazonProduct]:
@@ -184,11 +200,9 @@ class AmazonNormalizer:
         for raw in raw_products:
             try:
                 product = AmazonNormalizer.normalize_product(raw)
-                if product.is_valid:
-                    normalized.append(product)
-            except NormalizationError as e:
-                # Log but continue processing other products
-                # Sentry will capture this in production
+                normalized.append(product)
+            except NormalizationError:
+                # Skip products that can't be normalized
                 continue
         
         return normalized
