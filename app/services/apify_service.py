@@ -53,28 +53,30 @@ class ApifyService:
                                    max_results: int = 10) -> List[Dict[str, Any]]:
         """
         Scrape Amazon using junglee/free-amazon-product-scraper.
-      ")
-        # Input format for junglee/free-amazon-product-scraper
-actor_input = {
-    "categoryUrls": [search_url],  # CHANGED: startUrls → categoryUrls
-    "maxResultsPerStartUrl": max_results,
-    "proxyConfiguration": {
-        "useApifyProxy": True,
-        "apifyProxyGroups": ["RESIDENTIAL"]
-    },
-    "maxConcurrency": 1,
-    "includeReviews": False,
-    "includeQAndA": False
-}        try:
+        
+        Args:
+            keyword: Search keyword
+            domain: Amazon domain (com, co.uk, etc.)
+            max_results: Maximum results to return
+            
+        Returns:
+            List of raw product data
+            
+        Raises:
+            ExternalServiceError: If Apify API fails
+            NetworkError: If network connection fails
+        """
+        if not self.is_available:
+            raise ExternalServiceError("Apify service not configured")
+        
+        try:
             # junglee actor expects category/search URLs
             # Create Amazon search URL with keyword
             search_url = f"https://www.amazon.{domain}/s?k={keyword.replace(' ', '+')}"
             
             # Input format for junglee/free-amazon-product-scraper
             actor_input = {
-                "categoryUrls": [{
-                    "url": search_url
-                }],
+                "categoryUrls": [search_url],  # REQUIRED: Not startUrls
                 "maxResultsPerStartUrl": max_results,
                 "proxyConfiguration": {
                     "useApifyProxy": True,
@@ -92,7 +94,7 @@ actor_input = {
             start_response = await self.session.post(
                 f"{self.base_url}/acts/{self.actor_name}/run-sync-get-dataset-items",
                 json={"input": actor_input},
-                timeout=aiohttp.ClientTimeout(total=300)  # Longer timeout for scraping
+                timeout=aiohttp.ClientTimeout(total=300)
             )
             
             if start_response.status != 200:
@@ -134,15 +136,7 @@ actor_input = {
     
     @async_retry(exceptions=(aiohttp.ClientError, asyncio.TimeoutError))
     async def get_actor_status(self, actor_id: str) -> Dict[str, Any]:
-        """
-        Get Apify actor status.
-        
-        Args:
-            actor_id: Apify actor ID
-            
-        Returns:
-            Actor status information
-        """
+        """Get Apify actor status."""
         if not self.is_available:
             return {"status": "not_configured"}
         
@@ -158,12 +152,7 @@ actor_input = {
             return {"status": "network_error"}
     
     async def test_actor_connection(self) -> bool:
-        """
-        Test if the configured actor is accessible.
-        
-        Returns:
-            True if actor is accessible, False otherwise
-        """
+        """Test if the configured actor is accessible."""
         try:
             status = await self.get_actor_status(self.actor_name)
             return status.get("status") != "error"
