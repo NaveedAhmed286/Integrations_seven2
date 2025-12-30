@@ -53,23 +53,19 @@ class ApifyService:
                                    max_results: int = 10) -> List[Dict[str, Any]]:
         """
         Scrape Amazon using junglee/free-amazon-product-scraper.
-        
-        Args:
-            keyword: Search keyword
-            domain: Amazon domain (com, co.uk, etc.)
-            max_results: Maximum results to return
-            
-        Returns:
-            List of raw product data
-            
-        Raises:
-            ExternalServiceError: If Apify API fails
-            NetworkError: If network connection fails
-        """
-        if not self.is_available:
-            raise ExternalServiceError("Apify service not configured")
-        
-        try:
+      ")
+        # Input format for junglee/free-amazon-product-scraper
+actor_input = {
+    "categoryUrls": [search_url],  # CHANGED: startUrls → categoryUrls
+    "maxResultsPerStartUrl": max_results,
+    "proxyConfiguration": {
+        "useApifyProxy": True,
+        "apifyProxyGroups": ["RESIDENTIAL"]
+    },
+    "maxConcurrency": 1,
+    "includeReviews": False,
+    "includeQAndA": False
+}        try:
             # junglee actor expects category/search URLs
             # Create Amazon search URL with keyword
             search_url = f"https://www.amazon.{domain}/s?k={keyword.replace(' ', '+')}"
