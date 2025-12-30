@@ -24,7 +24,7 @@ class ApifyService:
     def __init__(self):
         self.api_key = config.APIFY_API_KEY
         self.base_url = "https://api.apify.com/v2"
-        self.actor_name = os.getenv("APIFY_ACTOR_NAME", "junglee~free-amazon-product-scraper")
+        self.actor_name = os.getenv("APIFY_ACTOR_NAME", "apify~amazon-scraper")
         self.session: Optional[aiohttp.ClientSession] = None
         self.is_available = bool(self.api_key)
     
@@ -52,7 +52,7 @@ class ApifyService:
     async def scrape_amazon_search(self, keyword: str, domain: str = "com", 
                                    max_results: int = 10) -> List[Dict[str, Any]]:
         """
-        Scrape Amazon using junglee/free-amazon-product-scraper.
+        Scrape Amazon using apify/amazon-scraper.
         
         Args:
             keyword: Search keyword
@@ -70,25 +70,19 @@ class ApifyService:
             raise ExternalServiceError("Apify service not configured")
         
         try:
-            # junglee actor expects category/search URLs
-            # Create Amazon search URL with keyword
-            search_url = f"https://www.amazon.{domain}/s?k={keyword.replace(' ', '+')}"
-            
-            # Input format for junglee/free-amazon-product-scraper
+            # Input format for apify/amazon-scraper (official actor)
             actor_input = {
-                "categoryUrls": [search_url],  # REQUIRED: Not startUrls
-                "maxResultsPerStartUrl": max_results,
+                "startUrls": [{
+                    "url": f"https://www.amazon.{domain}/s?k={keyword.replace(' ', '+')}"
+                }],
+                "maxItems": max_results,
                 "proxyConfiguration": {
                     "useApifyProxy": True,
                     "apifyProxyGroups": ["RESIDENTIAL"]
-                },
-                "maxConcurrency": 1,
-                "includeReviews": False,
-                "includeQAndA": False
+                }
             }
             
             logger.info(f"Scraping Amazon for keyword: {keyword}")
-            logger.debug(f"Actor input: {actor_input}")
             
             # Start actor run
             start_response = await self.session.post(
@@ -107,7 +101,7 @@ class ApifyService:
             # Parse response
             results = await start_response.json()
             
-            # junglee actor returns items in array format
+            # apify/amazon-scraper returns items in array format
             if isinstance(results, list):
                 items = results
             elif isinstance(results, dict) and "items" in results:
