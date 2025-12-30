@@ -5,6 +5,7 @@ All network logic is isolated here.
 """
 import aiohttp
 import asyncio
+import os
 from typing import List, Dict, Any, Optional
 import json
 
@@ -23,6 +24,7 @@ class ApifyService:
     def __init__(self):
         self.api_key = config.APIFY_API_KEY
         self.base_url = "https://api.apify.com/v2"
+        self.actor_name = os.getenv("APIFY_ACTOR_NAME", "scraper-engine~amazon-search-scraper")
         self.session: Optional[aiohttp.ClientSession] = None
         self.is_available = bool(self.api_key)
     
@@ -39,7 +41,7 @@ class ApifyService:
             },
             timeout=aiohttp.ClientTimeout(total=config.REQUEST_TIMEOUT)
         )
-        logger.info("Apify service initialized")
+        logger.info(f"Apify service initialized with actor: {self.actor_name}")
     
     async def close(self):
         """Close HTTP session."""
@@ -68,25 +70,30 @@ class ApifyService:
             raise ExternalServiceError("Apify service not configured")
         
         try:
-            # Prepare Apify actor input
+            # Prepare Apify actor input for scraper-engine/amazon-search-scraper
             actor_input = {
-                "keyword": keyword,
-                "domainCode": domain,
-                "maxPages": 1,
-                "maxItems": max_results,
-                "proxy": {
-                    "useApifyProxy": True
+                "searchUrlsOrKeywords": [keyword],
+                "maxResults": max_results,
+                "resultsPerPage": 10,
+                "sortBy": "RELEVANCE",
+                "proxyConfig": {
+                    "useApifyProxy": True,
+                    "apifyProxyGroups": ["RESIDENTIAL"]
                 }
             }
             
-            # Start actor run
+            logger.debug(f"Calling Apify actor: {self.actor_name} with input: {actor_input}")
+            
+            # Start actor run - FIXED: Using correct actor name
             start_response = await self.session.post(
-                f"{self.base_url}/acts/apify~amazon-search-scraper/run-sync-get-dataset-items",
-                json={"input": actor_input}
+                f"{self.base_url}/acts/{self.actor_name}/run-sync-get-dataset-items",
+                json={"input": actor_input},
+                timeout=aiohttp.ClientTimeout(total=300)  # Longer timeout for scraping
             )
             
             if start_response.status != 200:
                 error_text = await start_response.text()
+                logger.error(f"Apify API error {start_response.status}: {error_text}")
                 raise ExternalServiceError(
                     f"Apify API error {start_response.status}: {error_text}"
                 )
@@ -94,12 +101,20 @@ class ApifyService:
             # Parse response
             results = await start_response.json()
             
-            # Validate response structure
-            if not isinstance(results, list):
+            # Validate response structure - scraper-engine returns items in "items" field
+            if isinstance(results, dict) and "items" in results:
+                items = results["items"]
+            elif isinstance(results, list):
+                items = results
+            else:
+                logger.warning(f"Unexpected response format: {type(results)}")
+                items = []
+            
+            if not isinstance(items, list):
                 raise ExternalServiceError("Invalid response format from Apify")
             
-            logger.info(f"Scraped {len(results)} products for keyword: {keyword}")
-            return results
+            logger.info(f"Scraped {len(items)} products for keyword: {keyword}")
+            return items
             
         except aiohttp.ClientError as e:
             raise NetworkError(f"Network error calling Apify: {str(e)}") from e
@@ -132,6 +147,20 @@ class ApifyService:
                 
         except (aiohttp.ClientError, asyncio.TimeoutError):
             return {"status": "network_error"}
+    
+    async def test_actor_connection(self) -> bool:
+        """
+        Test if the configured actor is accessible.
+        
+        Returns:
+            True if actor is accessible, False otherwise
+        """
+        try:
+            status = await self.get_actor_status(self.actor_name)
+            return status.get("status") != "error"
+        except Exception as e:
+            logger.error(f"Actor test failed: {e}")
+            return False
 
 
 # Global service instance
