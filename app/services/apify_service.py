@@ -72,7 +72,7 @@ actor_input = {
             
             # Input format for junglee/free-amazon-product-scraper
             actor_input = {
-                "startUrls": [{
+                "categoryUrls": [{
                     "url": search_url
                 }],
                 "maxResultsPerStartUrl": max_results,
