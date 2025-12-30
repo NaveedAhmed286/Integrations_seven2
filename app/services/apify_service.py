@@ -70,8 +70,7 @@ class ApifyService:
         except Exception as e:
             logger.error(f"Failed to get Apify account status: {e}")
             return {"error": str(e)}
-    
-    @async_retry(exceptions=(aiohttp.ClientError, asyncio.TimeoutError), max_attempts=3)
+    @async_retry(exceptions=(aiohttp.ClientError, asyncio.TimeoutError))    
     async def scrape_amazon_search(self, keyword: str, domain: str = "com", 
                                    max_results: int = 10) -> List[Dict[str, Any]]:
         """
