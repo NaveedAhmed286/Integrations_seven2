@@ -24,7 +24,7 @@ class ApifyService:
     def __init__(self):
         self.api_key = config.APIFY_API_KEY
         self.base_url = "https://api.apify.com/v2"
-        self.actor_name = os.getenv("APIFY_ACTOR_NAME", "apify~amazon-scraper")
+        self.actor_name = os.getenv("APIFY_ACTOR_NAME", "apify~web-scraper")
         self.session: Optional[aiohttp.ClientSession] = None
         self.is_available = bool(self.api_key)
     
@@ -52,7 +52,7 @@ class ApifyService:
     async def scrape_amazon_search(self, keyword: str, domain: str = "com", 
                                    max_results: int = 10) -> List[Dict[str, Any]]:
         """
-        Scrape Amazon using apify/amazon-scraper.
+        Scrape Amazon using apify/web-scraper.
         
         Args:
             keyword: Search keyword
@@ -70,19 +70,49 @@ class ApifyService:
             raise ExternalServiceError("Apify service not configured")
         
         try:
-            # Input format for apify/amazon-scraper (official actor)
+            # Input format for apify/web-scraper
+            page_function = f"""async function pageFunction(context) {{
+                const $ = context.jQuery;
+                const products = [];
+                
+                // Extract products from Amazon search results
+                $('[data-component-type="s-search-result"]').each(function() {{
+                    const title = $(this).find('h2 a span').text().trim();
+                    const price = $(this).find('.a-price .a-offscreen').text().trim();
+                    const url = 'https://amazon.{domain}' + $(this).find('h2 a').attr('href');
+                    const rating = $(this).find('.a-icon-alt').text().trim();
+                    const reviews = $(this).find('.a-size-base').text().trim();
+                    
+                    if (title && price) {{
+                        products.push({{
+                            title: title,
+                            price: price,
+                            url: url,
+                            rating: rating || '',
+                            reviews: reviews || '',
+                            keyword: '{keyword}'
+                        }});
+                    }}
+                }});
+                
+                // Return first N products
+                return products.slice(0, {max_results});
+            }}"""
+            
             actor_input = {
                 "startUrls": [{
                     "url": f"https://www.amazon.{domain}/s?k={keyword.replace(' ', '+')}"
                 }],
                 "maxItems": max_results,
+                "pageFunction": page_function,
+                "injectJQuery": True,
                 "proxyConfiguration": {
-                    "useApifyProxy": True,
-                    "apifyProxyGroups": ["RESIDENTIAL"]
+                    "useApifyProxy": True
                 }
             }
             
             logger.info(f"Scraping Amazon for keyword: {keyword}")
+            logger.debug(f"Using web-scraper with {len(page_function)} chars page function")
             
             # Start actor run
             start_response = await self.session.post(
@@ -101,7 +131,7 @@ class ApifyService:
             # Parse response
             results = await start_response.json()
             
-            # apify/amazon-scraper returns items in array format
+            # web-scraper returns items in array format
             if isinstance(results, list):
                 items = results
             elif isinstance(results, dict) and "items" in results:
@@ -113,7 +143,7 @@ class ApifyService:
             if not isinstance(items, list):
                 raise ExternalServiceError("Invalid response format from Apify")
             
-            # Add keyword to each result for tracking
+            # Add keyword and domain to each result for tracking
             for item in items:
                 item["keyword"] = keyword
                 item["domain"] = domain
