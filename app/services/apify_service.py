@@ -73,59 +73,60 @@ class ApifyService:
         logger.info(f"Starting Amazon scrape for: '{keyword}' (domain: {domain}, max: {max_results})")
         
         try:
-            # Optimized page function based on working actor test
-           page_function = f"""async function pageFunction(context) {{
-    const $ = context.jQuery;
-    const results = [];
-    
-    $('div[data-asin]:not([data-asin=""])').each((index, element) => {{
-        const $el = $(element);
-        const asin = $el.attr('data-asin');
-        
-        // Title extraction
-        let title = '';
-        const titleSources = [
-            $el.find('h2 span'),
-            $el.find('.a-text-normal'),
-            $el.find('span.a-text-normal')
-        ];
-        
-        for (const source of titleSources) {{
-            const titleText = $(source).first().text().trim();
-            if (titleText && titleText.length > 10) {{
-                title = titleText;
-                break;
-            }}
-        }}
-        
-        // Price extraction - with fallback
-        let price = 'Price not found';
-        const allText = $el.text();
-        const priceMatch = allText.match(/\\$[\\d,]+\\.\\d{{2}}/);
-        if (priceMatch) {{
-            price = priceMatch[0];
-        }}
-        
-        // URL
-        const urlPath = $el.find('a[href*="/dp/"]').first().attr('href');
-        const url = urlPath ? 'https://www.amazon.{{domain}}' + urlPath.split('?')[0] : '';
-        
-        if (title && asin) {{
-            results.push({{
-                asin: asin,
-                title: title,
-                price: price,
-                url: url,
-                keyword: '{{keyword}}',
-                position: index + 1,
-                scraped_at: new Date().toISOString()
-            }});
-        }}
-    }});
-    
-    return results.slice(0, {{max_results}});
-}}"""            
-            # Actor input based on working configuration
+            # FINAL WORKING PAGE FUNCTION
+            page_function = f"""async function pageFunction(context) {{
+                const $ = context.jQuery;
+                const results = [];
+                
+                $('div[data-asin]:not([data-asin=""])').each((index, element) => {{
+                    const $el = $(element);
+                    const asin = $el.attr('data-asin');
+                    
+                    // Title extraction
+                    let title = '';
+                    const titleSources = [
+                        $el.find('h2 span'),
+                        $el.find('.a-text-normal'),
+                        $el.find('span.a-text-normal')
+                    ];
+                    
+                    for (const source of titleSources) {{
+                        const titleText = $(source).first().text().trim();
+                        if (titleText && titleText.length > 10) {{
+                            title = titleText;
+                            break;
+                        }}
+                    }}
+                    
+                    // Price extraction - with fallback
+                    let price = 'Price not found';
+                    const allText = $el.text();
+                    const priceMatch = allText.match(/\\$[\\d,]+\\.\\d{{2}}/);
+                    if (priceMatch) {{
+                        price = priceMatch[0];
+                    }}
+                    
+                    // URL
+                    const urlPath = $el.find('a[href*="/dp/"]').first().attr('href');
+                    const url = urlPath ? 'https://www.amazon.{domain}' + urlPath.split('?')[0] : '';
+                    
+                    if (title && asin) {{
+                        results.push({{
+                            asin: asin,
+                            title: title,
+                            price: price,
+                            url: url,
+                            keyword: '{keyword}',
+                            position: index + 1,
+                            scraped_at: new Date().toISOString()
+                        }});
+                    }}
+                }});
+                
+                return results.slice(0, {max_results});
+            }}"""
+            
+            # Actor input - PROPERLY INDENTED!
             actor_input = {
                 "startUrls": [{
                     "url": f"https://www.amazon.{domain}/s?k={keyword.replace(' ', '+')}"
@@ -134,7 +135,8 @@ class ApifyService:
                 "pageFunction": page_function,
                 "injectJQuery": True,
                 "proxyConfiguration": {
-                    "useApifyProxy": True
+                    "useApifyProxy": True,
+                    "apifyProxyGroups": ["RESIDENTIAL"]
                 },
                 "maxItems": max_results,
                 "waitUntil": "networkidle2",
@@ -143,11 +145,11 @@ class ApifyService:
             
             logger.debug(f"Sending request to Apify actor: {self.actor_name}")
             
-            # Use run-sync-get-dataset-items (simpler API)
+            # Use run-sync-get-dataset-items
             response = await self.session.post(
                 f"{self.base_url}/acts/{self.actor_name}/run-sync-get-dataset-items",
                 json=actor_input,
-                timeout=aiohttp.ClientTimeout(total=180)  # 3 minutes timeout
+                timeout=aiohttp.ClientTimeout(total=180)
             )
             
             if response.status != 200:
