@@ -95,100 +95,98 @@ class ApifyService:
         
         try:
             # CORRECT input format for apify/web-scraper
-            page_function = f"""
-            async function pageFunction(context) {{
-                const $ = context.jQuery;
-                const results = [];
-                
-                // Wait for page to load
-                await context.waitForSelector('[data-component-type="s-search-result"]');
-                
-                // Amazon product containers
-                $('[data-component-type="s-search-result"]').each((index, element) => {{
-                    const $el = $(element);
-                    
-                    // Extract basic information
-                    const title = $el.find('h2 a span').first().text().trim();
-                    const priceText = $el.find('.a-price .a-offscreen').text();
-                    const url = 'https://amazon.{domain}' + ($el.find('h2 a').attr('href') || '');
-                    const ratingText = $el.find('.a-icon-alt').text();
-                    const reviewsText = $el.find('span.a-size-base.s-underline-text').text();
-                    const image = $el.find('img.s-image').attr('src') || '';
-                    
-                    // Parse price
-                    let price = 0;
-                    if (priceText) {{
-                        const priceMatch = priceText.match(/\\$?([\\d.,]+)/);
-                        if (priceMatch) {{
-                            price = parseFloat(priceMatch[1].replace(',', ''));
-                        }}
-                    }}
-                    
-                    // Parse rating
-                    let rating = 0;
-                    if (ratingText) {{
-                        const ratingMatch = ratingText.match(/([\\d.]+)/);
-                        if (ratingMatch) {{
-                            rating = parseFloat(ratingMatch[1]);
-                        }}
-                    }}
-                    
-                    // Parse reviews
-                    let reviews = 0;
-                    if (reviewsText) {{
-                        const reviewsMatch = reviewsText.match(/([\\d,]+)/);
-                        if (reviewsMatch) {{
-                            reviews = parseInt(reviewsMatch[1].replace(',', ''));
-                        }}
-                    }}
-                    
-                    // Check if sponsored
-                    const sponsored = $el.text().includes('Sponsored') || 
-                                     $el.find('span:contains("Sponsored")').length > 0;
-                    
-                    // Check if Prime
-                    const prime = $el.find('.a-icon-prime, i.a-icon-prime').length > 0;
-                    
-                    if (title && price > 0) {{
-                        results.push({{
-                            title: title,
-                            price: price,
-                            url: url,
-                            rating: rating,
-                            reviews: reviews,
-                            image: image,
-                            sponsored: sponsored,
-                            prime: prime,
-                            position: index + 1,
-                            keyword: '{keyword}',
-                            scraped_at: new Date().toISOString()
-                        }});
-                    }}
-                }});
-                
-                // If no results with new layout, try alternative selectors
-                if (results.length === 0) {{
-                    $('.s-result-item').each((index, element) => {{
-                        const $el = $(element);
-                        const title = $el.find('.a-text-normal').first().text().trim();
-                        const priceText = $el.find('.a-price .a-offscreen').text();
-                        
-                        if (title && priceText) {{
-                            const price = parseFloat(priceText.replace(/[^\\d.]/g, ''));
-                            results.push({{
-                                title: title,
-                                price: price,
-                                keyword: '{keyword}',
-                                scraped_at: new Date().toISOString()
-                            }});
-                        }}
-                    }});
-                }}
-                
-                return results;
+          page_function = f"""
+async function pageFunction(context) {{
+    const $ = context.jQuery;
+    const results = [];
+    
+    // NO waitForSelector! The page is already loaded
+    
+    // Amazon product containers
+    $('[data-component-type="s-search-result"]').each((index, element) => {{
+        const $el = $(element);
+        
+        // Extract basic information
+        const title = $el.find('h2 a span').first().text().trim();
+        const priceText = $el.find('.a-price .a-offscreen').text();
+        const url = 'https://amazon.{domain}' + ($el.find('h2 a').attr('href') || '');
+        const ratingText = $el.find('.a-icon-alt').text();
+        const reviewsText = $el.find('span.a-size-base.s-underline-text').text();
+        const image = $el.find('img.s-image').attr('src') || '';
+        
+        // Parse price - handle "3 sizes" issue
+        let price = 0;
+        if (priceText && !priceText.includes('size')) {{
+            const priceMatch = priceText.match(/\\$?([\\d.,]+)/);
+            if (priceMatch) {{
+                price = parseFloat(priceMatch[1].replace(',', ''));
             }}
-            """
+        }}
+        
+        // Parse rating
+        let rating = 0;
+        if (ratingText) {{
+            const ratingMatch = ratingText.match(/([\\d.]+)/);
+            if (ratingMatch) {{
+                rating = parseFloat(ratingMatch[1]);
+            }}
+        }}
+        
+        // Parse reviews
+        let reviews = 0;
+        if (reviewsText) {{
+            const reviewsMatch = reviewsText.match(/([\\d,]+)/);
+            if (reviewsMatch) {{
+                reviews = parseInt(reviewsMatch[1].replace(',', ''));
+            }}
+        }}
+        
+        // Check if sponsored
+        const sponsored = $el.text().includes('Sponsored') || 
+                         $el.find('span:contains("Sponsored")').length > 0;
+        
+        // Check if Prime
+        const prime = $el.find('.a-icon-prime, i.a-icon-prime').length > 0;
+        
+        if (title && price > 0) {{
+            results.push({{
+                title: title,
+                price: price,
+                url: url,
+                rating: rating,
+                reviews: reviews,
+                image: image,
+                sponsored: sponsored,
+                prime: prime,
+                position: index + 1,
+                keyword: '{keyword}',
+                scraped_at: new Date().toISOString()
+            }});
+        }}
+    }});
+    
+    // If no results with new layout, try alternative selectors
+    if (results.length === 0) {{
+        $('.s-result-item').each((index, element) => {{
+            const $el = $(element);
+            const title = $el.find('.a-text-normal').first().text().trim();
+            const priceText = $el.find('.a-price .a-offscreen').text();
             
+            if (title && priceText) {{
+                const price = parseFloat(priceText.replace(/[^\\d.]/g, ''));
+                results.push({{
+                    title: title,
+                    price: price,
+                    keyword: '{keyword}',
+                    scraped_at: new Date().toISOString()
+                }});
+            }}
+        }});
+    }}
+    
+    return results.slice(0, {max_results});
+}}
+"""            
             actor_input = {
                 "startUrls": [{
                     "url": f"https://www.amazon.{domain}/s?k={keyword.replace(' ', '+')}"
