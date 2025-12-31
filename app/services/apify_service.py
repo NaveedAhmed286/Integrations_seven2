@@ -25,8 +25,9 @@ class ApifyService:
     def __init__(self):
         self.api_key = config.APIFY_API_KEY
         self.base_url = "https://api.apify.com/v2"
-        self.actor_name = "apify/web-scraper"
+        self.actor_name = "apify~web-scraper"        
         self.session: Optional[aiohttp.ClientSession] = None
+        
         self.is_available = bool(self.api_key)
     
     async def initialize(self):
