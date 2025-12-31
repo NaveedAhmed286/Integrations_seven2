@@ -14,6 +14,7 @@ from app.config import config
 from app.logger import logger
 from app.errors import ExternalServiceError, NormalizationError
 from app.services.apify_service import ApifyService
+from app.services.google_service import google_sheets_service  # <<< ADDED >>>
 from app.memory_manager import MemoryManager
 from app.normalizers.amazon import AmazonNormalizer
 
@@ -31,6 +32,7 @@ async def lifespan(app: FastAPI):
     # Initialize services
     await apify_service.initialize()
     await memory_manager.initialize()
+    await google_sheets_service.initialize()  # <<< ADDED >>>
     
     yield
     
@@ -60,7 +62,6 @@ async def root():
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
-    # Check Redis connection asynchronously
     redis_available = False
     if memory_manager.short_term.redis and memory_manager.short_term.is_available:
         try:
@@ -74,7 +75,8 @@ async def health_check():
         "apify": apify_service.is_available,
         "memory": memory_manager.initialized,
         "redis": redis_available,
-        "postgres": memory_manager.long_term.is_available
+        "postgres": memory_manager.long_term.is_available,
+        "google_sheets": google_sheets_service.is_available  # <<< ADDED >>>
     }
     
     status = "healthy" if all(services.values()) else "degraded"
@@ -94,26 +96,22 @@ async def search_amazon(request: Request):
         domain = data.get("domain", "com")
         max_results = data.get("max_results", 10)
         
-        # Input validation
         if not keyword:
             raise HTTPException(status_code=400, detail="Keyword is required")
         
         if len(keyword) < 2:
             raise HTTPException(status_code=400, detail="Keyword must be at least 2 characters")
         
-        # Limit max results for performance
         if max_results > 50:
             max_results = 50
-            logger.info(f"Limiting max_results to 50 for performance")
-        
-        logger.info(f"Searching Amazon for: '{keyword}' (domain: {domain}, max: {max_results})")
-        
-        # Search Amazon using junglee actor
+            logger.info("Limiting max_results to 50")
+
+        logger.info(f"Searching Amazon for: '{keyword}'")
+
         raw_results = await apify_service.scrape_amazon_search(
             keyword, domain, max_results
         )
-        
-        # Normalize results (handles junglee actor format)
+
         normalized_results = []
         normalization_errors = 0
         
@@ -124,64 +122,51 @@ async def search_amazon(request: Request):
             except NormalizationError as e:
                 logger.warning(f"Failed to normalize product: {e}")
                 normalization_errors += 1
-                continue
-        
-        # Log summary
-        if normalization_errors > 0:
-            logger.warning(f"Skipped {normalization_errors} products due to normalization errors")
-        
-        # Store in episodic memory
+
         memory_manager.store_episodic(
             client_id="api",
             analysis_type="search",
             input_data={"keyword": keyword, "domain": domain, "max_results": max_results},
-            output_data={"results_count": len(normalized_results), "raw_count": len(raw_results)},
+            output_data={"results_count": len(normalized_results)},
             insights=[
-                f"Found {len(raw_results)} raw products for '{keyword}'",
-                f"Successfully normalized {len(normalized_results)} products",
-                f"Domain: amazon.{domain}"
+                f"Found {len(raw_results)} raw products",
+                f"Normalized {len(normalized_results)} products"
             ]
         )
-        
+
+        # ===== GOOGLE SHEET WRITE (ONLY REAL ADDITION) =====
+        if google_sheets_service.is_available and normalized_results:
+            await google_sheets_service.append_to_sheet(
+                spreadsheet_id=config.GOOGLE_SHEET_ID,
+                worksheet_name="Sheet1",
+                data=normalized_results
+            )
+        # ==================================================
+
         return {
             "success": True,
             "keyword": keyword,
-            "domain": domain,
             "results": normalized_results,
             "count": len(normalized_results),
-            "raw_count": len(raw_results),
             "normalization_errors": normalization_errors,
             "timestamp": datetime.utcnow().isoformat()
         }
-        
+
     except ExternalServiceError as e:
-        logger.error(f"Apify service error: {e}")
-        raise HTTPException(
-            status_code=503, 
-            detail=f"Amazon scraping service temporarily unavailable. Please try again in a moment."
-        )
-    except HTTPException:
-        raise
+        logger.error(f"External service error: {e}")
+        raise HTTPException(status_code=503, detail="Service unavailable")
+
     except Exception as e:
-        logger.error(f"Unexpected error in search: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500, 
-            detail="Internal server error. Please check logs for details."
-        )
+        logger.error(f"Unexpected error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.get("/api/v1/memory/{client_id}")
 async def get_memory_context(client_id: str):
-    """Get memory context for a client."""
     context = await memory_manager.get_ai_context(client_id)
-    
-    return {
-        "client_id": client_id,
-        "context": context
-    }
+    return {"client_id": client_id, "context": context}
 
 if __name__ == "__main__":
     import os
     import uvicorn
-    # Read the PORT from the environment, default to 8000
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
