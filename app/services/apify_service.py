@@ -74,73 +74,57 @@ class ApifyService:
         
         try:
             # Optimized page function based on working actor test
-            page_function = f"""
-            async function pageFunction(context) {{
-                const $ = context.jQuery;
-                const results = [];
-                
-                // Extract products using selector that worked in tests
-                $('[data-component-type="s-search-result"]').each((index, element) => {{
-                    const $el = $(element);
-                    
-                    // Extract ASIN (unique Amazon ID)
-                    const asin = $el.attr('data-asin') || $el.data('asin') || '';
-                    
-                    // Extract product title
-                    const title = $el.find('h2 a span').first().text().trim();
-                    
-                    // Extract price - handle size variants issue
-                    let price = '';
-                    const priceSelectors = [
-                        '.a-price .a-offscreen',
-                        '.a-price-whole',
-                        '.a-color-price'
-                    ];
-                    
-                    for (const selector of priceSelectors) {{
-                        const priceText = $el.find(selector).first().text().trim();
-                        if (priceText && !priceText.includes('size')) {{
-                            price = priceText;
-                            break;
-                        }}
-                    }}
-                    
-                    // Extract rating
-                    const ratingText = $el.find('.a-icon-alt').first().text();
-                    const rating = ratingText ? ratingText.split(' ')[0] : '0';
-                    
-                    // Extract reviews
-                    const reviewsText = $el.find('span.a-size-base.s-underline-text').first().text();
-                    const reviews = reviewsText ? reviewsText.replace(/,/g, '') : '0';
-                    
-                    // Get URL
-                    const urlPath = $el.find('h2 a').first().attr('href');
-                    const url = urlPath ? 'https://www.amazon.com' + urlPath.split('?')[0] : '';
-                    
-                    // Check if sponsored
-                    const sponsored = $el.find('span:contains("Sponsored")').length > 0;
-                    
-                    if (title) {{
-                        results.push({{
-                            asin: asin,
-                            title: title,
-                            price: price || 'Price not found',
-                            rating: rating,
-                            reviews: reviews,
-                            url: url,
-                            sponsored: sponsored,
-                            position: index + 1,
-                            keyword: '{keyword}',
-                            scraped_at: new Date().toISOString()
-                        }});
-                    }}
-                }});
-                
-                // Return limited results
-                return results.slice(0, {max_results});
+           page_function = f"""async function pageFunction(context) {{
+    const $ = context.jQuery;
+    const results = [];
+    
+    $('div[data-asin]:not([data-asin=""])').each((index, element) => {{
+        const $el = $(element);
+        const asin = $el.attr('data-asin');
+        
+        // Title extraction
+        let title = '';
+        const titleSources = [
+            $el.find('h2 span'),
+            $el.find('.a-text-normal'),
+            $el.find('span.a-text-normal')
+        ];
+        
+        for (const source of titleSources) {{
+            const titleText = $(source).first().text().trim();
+            if (titleText && titleText.length > 10) {{
+                title = titleText;
+                break;
             }}
-            """
-            
+        }}
+        
+        // Price extraction - with fallback
+        let price = 'Price not found';
+        const allText = $el.text();
+        const priceMatch = allText.match(/\\$[\\d,]+\\.\\d{{2}}/);
+        if (priceMatch) {{
+            price = priceMatch[0];
+        }}
+        
+        // URL
+        const urlPath = $el.find('a[href*="/dp/"]').first().attr('href');
+        const url = urlPath ? 'https://www.amazon.{{domain}}' + urlPath.split('?')[0] : '';
+        
+        if (title && asin) {{
+            results.push({{
+                asin: asin,
+                title: title,
+                price: price,
+                url: url,
+                keyword: '{{keyword}}',
+                position: index + 1,
+                scraped_at: new Date().toISOString()
+            }});
+        }}
+    }});
+    
+    return results.slice(0, {{max_results}});
+}}"""            
             # Actor input based on working configuration
             actor_input = {
                 "startUrls": [{
