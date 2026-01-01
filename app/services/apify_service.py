@@ -83,7 +83,7 @@ class ApifyService:
                     const $el = $(element);
                     const asin = $el.attr('data-asin');
                     
-                    # Title extraction
+                    // Title extraction
                     let title = '';
                     const titleSources = [
                         $el.find('h2 span'),
@@ -99,7 +99,7 @@ class ApifyService:
                         }}
                     }}
                     
-                    # Price extraction - with fallback
+                    // Price extraction - with fallback
                     let price = 'Price not found';
                     const allText = $el.text();
                     const priceMatch = allText.match(/\\$[\\d,]+\\.\\d{{2}}/);
@@ -107,7 +107,7 @@ class ApifyService:
                         price = priceMatch[0];
                     }}
                     
-                    # URL
+                    // URL
                     const urlPath = $el.find('a[href*="/dp/"]').first().attr('href');
                     const url = urlPath ? 'https://www.amazon.{domain}' + urlPath.split('?')[0] : '';
                     
@@ -195,6 +195,59 @@ class ApifyService:
         except Exception as e:
             logger.error(f"Unexpected error in scrape_amazon_search: {e}", exc_info=True)
             raise ExternalServiceError(f"Failed to scrape Amazon: {str(e)}") from e
+    
+    @async_retry(exceptions=(aiohttp.ClientError, asyncio.TimeoutError))
+    async def fetch_dataset(self, dataset_id: str) -> List[Dict[str, Any]]:
+        """
+        Fetch dataset items from Apify.
+        
+        Args:
+            dataset_id: Apify dataset ID
+            
+        Returns:
+            List of dataset items
+            
+        Raises:
+            ExternalServiceError: If Apify API fails
+        """
+        if not self.is_available:
+            raise ExternalServiceError("Apify service not configured")
+        
+        logger.info(f"Fetching dataset: {dataset_id}")
+        
+        try:
+            response = await self.session.get(
+                f"{self.base_url}/datasets/{dataset_id}/items",
+                timeout=aiohttp.ClientTimeout(total=60)
+            )
+            
+            if response.status != 200:
+                error_text = await response.text()
+                logger.error(f"Failed to fetch dataset {dataset_id}: {error_text[:200]}")
+                raise ExternalServiceError(f"Failed to fetch dataset: {response.status}")
+            
+            # Parse response
+            items = await response.json()
+            
+            if not isinstance(items, list):
+                logger.warning(f"Unexpected dataset format: {type(items)}")
+                return []
+            
+            logger.info(f"Successfully fetched {len(items)} items from dataset {dataset_id}")
+            return items
+            
+        except aiohttp.ClientError as e:
+            logger.error(f"Network error fetching dataset: {str(e)}")
+            raise NetworkError(f"Network error fetching dataset: {str(e)}") from e
+        except asyncio.TimeoutError as e:
+            logger.error(f"Timeout fetching dataset: {str(e)}")
+            raise NetworkError(f"Timeout fetching dataset: {str(e)}") from e
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON response from dataset: {str(e)}")
+            raise ExternalServiceError(f"Invalid JSON response from dataset: {str(e)}") from e
+        except Exception as e:
+            logger.error(f"Unexpected error in fetch_dataset: {e}", exc_info=True)
+            raise ExternalServiceError(f"Failed to fetch dataset: {str(e)}") from e
     
     @async_retry(exceptions=(aiohttp.ClientError, asyncio.TimeoutError))
     async def get_actor_status(self, actor_id: str = None) -> Dict[str, Any]:
