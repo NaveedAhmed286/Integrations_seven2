@@ -62,21 +62,37 @@ async def root():
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
+    # Safely check Redis
     redis_available = False
-    if memory_manager.short_term.redis and memory_manager.short_term.is_available:
-        try:
+    try:
+        if memory_manager.short_term.redis and memory_manager.short_term.is_available:
             await memory_manager.short_term.redis.ping()
             redis_available = True
-        except Exception as e:
-            logger.warning(f"Redis ping failed: {e}")
-            redis_available = False
-    
+    except Exception as e:
+        logger.warning(f"Redis ping failed: {e}")
+
+    # Safely check Postgres
+    postgres_available = False
+    try:
+        if memory_manager.long_term.is_available:
+            postgres_available = True
+    except Exception as e:
+        logger.warning(f"Postgres check failed: {e}")
+
+    # Safely check Google Sheets
+    sheets_available = False
+    try:
+        if google_sheets_service.is_available:
+            sheets_available = True
+    except Exception as e:
+        logger.warning(f"Google Sheets check failed: {e}")
+
     services = {
         "apify": apify_service.is_available,
         "memory": memory_manager.initialized,
         "redis": redis_available,
-        "postgres": memory_manager.long_term.is_available,
-        "google_sheets": google_sheets_service.is_available  # <<< ADDED >>>
+        "postgres": postgres_available,
+        "google_sheets": sheets_available
     }
     
     status = "healthy" if all(services.values()) else "degraded"
@@ -239,7 +255,10 @@ async def test_mock_sheet(request: Request):
         raise
     except Exception as e:
         logger.error(f"Mock sheet test failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Mock sheet test failed")if __name__ == "__main__":
+        raise HTTPException(status_code=500, detail="Mock sheet test failed")
+
+
+if __name__ == "__main__":
     import os
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
