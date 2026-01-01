@@ -218,32 +218,49 @@ async def test_mock_sheet(request: Request):
 
 
 # ======================
-# APIFY WEBHOOK (STEP 2 of POINT 9)
+# APIFY WEBHOOK (STEP 2 of POINT 9) - UPDATED FOR ACTOR-WEBHOOK
 # ======================
-@app.post("/api/v1/webhooks/apify")
+@app.post("/api/v1/actor-webhook")
 async def apify_webhook(payload: dict):
     logger.info(f"Received Apify webhook: {payload}")
-
+    
+    # Apify webhook structure: https://docs.apify.com/platform/integrations/webhooks
     dataset_id = payload.get("datasetId")
+    actor_run_id = payload.get("runId")
     keyword = payload.get("keyword", "unknown")
-
+    
     if not dataset_id:
-        return {"status": "ignored"}
-
+        logger.warning("No datasetId in webhook payload")
+        return {"status": "ignored", "reason": "No datasetId"}
+    
+    # Fetch the actual data from Apify dataset
     results = await apify_service.fetch_dataset(dataset_id)
-
+    
+    if not results:
+        logger.warning(f"No results found in dataset {dataset_id}")
+        return {"status": "empty"}
+    
+    logger.info(f"Processing {len(results)} items from dataset {dataset_id}")
+    
+    # Process each item
+    rows = []
     for item in results:
         ai_result = await memory_manager.ai_analyze_product(item, keyword)
-        await google_sheets_service.append_rows([{
+        rows.append({
             "timestamp": datetime.utcnow().isoformat(),
             "asin": item.get("asin"),
             "keyword": keyword,
             "ai_recommendation": ai_result.get("recommendation"),
             "opportunity_score": ai_result.get("opportunity_score"),
             "key_advantages": ai_result.get("key_advantages"),
-        }])
-
-    return {"status": "processed"}
+        })
+    
+    # Write to Google Sheets
+    if rows and google_sheets_service.is_available:
+        await google_sheets_service.append_rows(rows)
+        logger.info(f"Written {len(rows)} rows to Google Sheets")
+    
+    return {"status": "processed", "items": len(rows)}
 
 
 # ======================
