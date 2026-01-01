@@ -165,7 +165,81 @@ async def get_memory_context(client_id: str):
     context = await memory_manager.get_ai_context(client_id)
     return {"client_id": client_id, "context": context}
 
-if __name__ == "__main__":
+@app.post("/api/v1/test-mock-sheet")
+async def test_mock_sheet(request: Request):
+    """
+    Test endpoint:
+    - No Apify
+    - Uses mock Amazon data
+    - Calls DeepSeek
+    - Writes to Google Sheet
+    """
+    try:
+        payload = await request.json()
+
+        keyword = payload.get("keyword")
+        domain_code = payload.get("domain_code", "com")
+        results = payload.get("results", [])
+
+        if not keyword or not results:
+            raise HTTPException(status_code=400, detail="keyword and results are required")
+
+        sheet_rows = []
+
+        for item in results:
+            # --- AI ANALYSIS (DeepSeek) ---
+            ai_result = await memory_manager.ai_analyze_product(
+                product_data=item,
+                keyword=keyword
+            )
+
+            # --- Map EXACT Google Sheet columns ---
+            sheet_rows.append({
+                "timestamp": datetime.utcnow().isoformat(),
+                "asin": item.get("asin"),
+                "keyword": keyword,
+                "domain_code": domain_code,
+                "search_result_position": item.get("search_result_position"),
+                "count_review": item.get("count_review"),
+                "product_rating": item.get("product_rating"),
+                "price": item.get("price"),
+                "retail_price": item.get("retail_price"),
+                "img_url": item.get("img_url"),
+                "dp_url": item.get("dp_url"),
+                "sponsored": item.get("sponsored"),
+                "prime": item.get("prime"),
+                "product_description": item.get("product_description"),
+                "sales_volume": item.get("sales_volume"),
+                "manufacturer": item.get("manufacturer"),
+                "page": item.get("page"),
+                "sort_strategy": item.get("sort_strategy"),
+                "result_count": item.get("result_count"),
+                "similar_keywords": ", ".join(item.get("similar_keywords", [])),
+                "categories": ", ".join(item.get("categories", [])),
+                "variations": str(item.get("variations")),
+                "product_details": str(item.get("product_details")),
+                "availability": item.get("availability"),
+                "scraped_at": item.get("scraped_at"),
+                # --- AI OUTPUT ---
+                "ai_recommendation": ai_result.get("recommendation"),
+                "opportunity_score": ai_result.get("opportunity_score"),
+                "key_advantages": ai_result.get("key_advantages"),
+            })
+
+        # --- WRITE TO GOOGLE SHEET ---
+        await memory_manager.google_sheet.append_rows(sheet_rows)
+
+        return {
+            "success": True,
+            "rows_written": len(sheet_rows),
+            "message": "Mock data + AI analysis written to Google Sheet"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Mock sheet test failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Mock sheet test failed")if __name__ == "__main__":
     import os
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
