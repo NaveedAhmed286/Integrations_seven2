@@ -102,6 +102,42 @@ async def health_check():
 
 
 # ======================
+# NEW: Readiness endpoints for Railway health check
+# ======================
+@app.get("/ready")
+async def readiness_check():
+    """Kubernetes/Platform readiness probe"""
+    services = {
+        "apify": apify_service.is_available,
+        "memory": memory_manager.initialized,
+        "redis": memory_manager.short_term.is_available,
+        "postgres": memory_manager.long_term.is_available,
+        "google_sheets": google_sheets_service.is_available
+    }
+    
+    # App is ready if at least config is loaded
+    if any(services.values()):  # At least one service is available
+        return {
+            "status": "ready",
+            "services": services,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    else:
+        raise HTTPException(
+            status_code=503, 
+            detail=f"Application starting up. Services: {services}"
+        )
+
+@app.get("/live")
+async def liveness_check():
+    """Kubernetes/Platform liveness probe"""
+    return {
+        "status": "alive",
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+
+# ======================
 # REAL SEARCH ENDPOINT
 # ======================
 @app.post("/api/v1/search")
