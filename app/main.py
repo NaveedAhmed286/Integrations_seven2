@@ -14,7 +14,7 @@ from app.config import config
 from app.logger import logger
 from app.errors import ExternalServiceError, NormalizationError
 from app.services.apify_service import ApifyService
-from app.services.google_service import google_sheets_service  # <<< ADDED >>>
+from app.services.google_service import google_sheets_service
 from app.memory_manager import MemoryManager
 from app.normalizers.amazon import AmazonNormalizer
 
@@ -32,7 +32,7 @@ async def lifespan(app: FastAPI):
     # Initialize services
     await apify_service.initialize()
     await memory_manager.initialize()
-    await google_sheets_service.initialize()  # <<< ADDED >>>
+    await google_sheets_service.initialize()
     
     yield
     
@@ -61,41 +61,28 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint."""
-    # Safely check Redis
+    """Health check endpoint with logging."""
     redis_available = False
-    try:
-        if memory_manager.short_term.redis and memory_manager.short_term.is_available:
+    if memory_manager.short_term.redis and memory_manager.short_term.is_available:
+        try:
             await memory_manager.short_term.redis.ping()
             redis_available = True
-    except Exception as e:
-        logger.warning(f"Redis ping failed: {e}")
-
-    # Safely check Postgres
-    postgres_available = False
-    try:
-        if memory_manager.long_term.is_available:
-            postgres_available = True
-    except Exception as e:
-        logger.warning(f"Postgres check failed: {e}")
-
-    # Safely check Google Sheets
-    sheets_available = False
-    try:
-        if google_sheets_service.is_available:
-            sheets_available = True
-    except Exception as e:
-        logger.warning(f"Google Sheets check failed: {e}")
-
+            logger.info("Redis ping successful")
+        except Exception as e:
+            logger.warning(f"Redis ping failed: {e}")
+            redis_available = False
+    
     services = {
         "apify": apify_service.is_available,
         "memory": memory_manager.initialized,
         "redis": redis_available,
-        "postgres": postgres_available,
-        "google_sheets": sheets_available
+        "postgres": memory_manager.long_term.is_available,
+        "google_sheets": google_sheets_service.is_available
     }
     
     status = "healthy" if all(services.values()) else "degraded"
+    
+    logger.info(f"Health check: {services}")
     
     return {
         "status": status,
@@ -150,14 +137,13 @@ async def search_amazon(request: Request):
             ]
         )
 
-        # ===== GOOGLE SHEET WRITE (ONLY REAL ADDITION) =====
+        # ===== GOOGLE SHEET WRITE =====
         if google_sheets_service.is_available and normalized_results:
             await google_sheets_service.append_to_sheet(
                 spreadsheet_id=config.GOOGLE_SHEET_ID,
                 worksheet_name="Sheet1",
                 data=normalized_results
             )
-        # ==================================================
 
         return {
             "success": True,
@@ -192,7 +178,6 @@ async def test_mock_sheet(request: Request):
     """
     try:
         payload = await request.json()
-
         keyword = payload.get("keyword")
         domain_code = payload.get("domain_code", "com")
         results = payload.get("results", [])
