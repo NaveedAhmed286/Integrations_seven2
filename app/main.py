@@ -55,8 +55,7 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down Amazon Scraper System")
 
     await apify_service.close()
-    await memory_manager.close()
-
+   
 
 # ======================
 # FastAPI app
