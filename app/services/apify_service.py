@@ -83,7 +83,7 @@ class ApifyService:
                     const $el = $(element);
                     const asin = $el.attr('data-asin');
                     
-                    // Title extraction
+                    # Title extraction
                     let title = '';
                     const titleSources = [
                         $el.find('h2 span'),
@@ -99,7 +99,7 @@ class ApifyService:
                         }}
                     }}
                     
-                    // Price extraction - with fallback
+                    # Price extraction - with fallback
                     let price = 'Price not found';
                     const allText = $el.text();
                     const priceMatch = allText.match(/\\$[\\d,]+\\.\\d{{2}}/);
@@ -107,7 +107,7 @@ class ApifyService:
                         price = priceMatch[0];
                     }}
                     
-                    // URL
+                    # URL
                     const urlPath = $el.find('a[href*="/dp/"]').first().attr('href');
                     const url = urlPath ? 'https://www.amazon.{domain}' + urlPath.split('?')[0] : '';
                     
