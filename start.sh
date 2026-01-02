@@ -1,15 +1,7 @@
 #!/bin/bash
-# Start the FastAPI app
 
-echo "========================================="
-echo "Starting Amazon Scraper System"
-echo "Time: $(date)"
-echo "========================================="
+export PYTHONPATH="/app:$PYTHONPATH"
 
-# Wait for system to stabilize
-echo "Waiting 10 seconds..."
-sleep 10
+sleep 5
 
-# Start the application
-echo "Starting Uvicorn server..."
-exec python -m uvicorn main:app --host 0.0.0.0 --port 8080 --log-level info
+exec python -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --log-level info
