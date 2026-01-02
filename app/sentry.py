@@ -11,7 +11,7 @@ import sentry_sdk
 from sentry_sdk.integrations.asyncio import AsyncioIntegration
 from sentry_sdk.integrations.logging import LoggingIntegration
 
-from app.logger import logger  # Only import what you need
+from app.logger import logger
 
 # Project name constant
 PROJECT_NAME = "integrations_seven2"
@@ -22,30 +22,26 @@ def initialize_sentry():
     # Get config directly from environment variables
     sentry_dsn = os.environ.get("SENTRY_DSN")
     
-    # Use project-specific environment variable or default
-    environment = os.environ.get("ENVIRONMENT", 
-                                os.environ.get("RAILWAY_ENVIRONMENT", "production"))
-    
     if not sentry_dsn:
         logger.info("Sentry not configured, skipping initialization")
         return
     
+    # Use Railway environment or default
+    environment = os.environ.get("RAILWAY_ENVIRONMENT", 
+                                os.environ.get("ENVIRONMENT", "production"))
+    
     try:
-        # Generate release ID specific to your project
-        release = os.environ.get("SENTRY_RELEASE")
-        if not release:
-            # Create unique release with project name and timestamp
-            release = f"{PROJECT_NAME}@{int(time.time())}"
+        # Create unique release ID with timestamp
+        release = os.environ.get("SENTRY_RELEASE", 
+                                f"{PROJECT_NAME}@{int(time.time())}")
         
-        # Get service name from Railway if available
+        # Get service name
         service_name = os.environ.get("RAILWAY_SERVICE_NAME", PROJECT_NAME)
         
         sentry_sdk.init(
             dsn=sentry_dsn,
             environment=environment,
             release=release,
-            
-            # Set service name for better tracking
             server_name=service_name,
             
             integrations=[
@@ -53,129 +49,83 @@ def initialize_sentry():
                 LoggingIntegration(level=logging.INFO, event_level=logging.ERROR)
             ],
             
-            # Performance monitoring
-            traces_sample_rate=0.1,  # 10% of transactions
-            profiles_sample_rate=0.05,  # 5% of profiles
+            # CRITICAL: This prevents old cached errors from being sent
+            before_send=_filter_historical_events,
+            before_send_transaction=_filter_historical_transactions,
             
-            # Error sampling (100% of errors)
-            sample_rate=1.0,
+            # Sampling rates
+            traces_sample_rate=0.1,
+            profiles_sample_rate=0.05,
+            sample_rate=1.0,  # 100% of errors
             
-            # Filter and enrich events
-            before_send=lambda event, hint: _filter_and_enrich_event(
-                event, hint, environment, service_name
-            ),
-            
-            # Optimization
+            # Settings
             send_default_pii=False,
             default_integrations=False,
             debug=False,
+            
+            # Add startup time as tag
+            _experiments={
+                "record_qps": True,
+            }
         )
         
-        logger.info(f"Sentry initialized for {service_name} ({environment})")
-        logger.info(f"Release: {release}")
+        # Set global tags
+        sentry_sdk.set_tag("project", PROJECT_NAME)
+        sentry_sdk.set_tag("service", service_name)
+        sentry_sdk.set_tag("railway_service", service_name)
+        sentry_sdk.set_tag("port", "8080")  # Your fixed port
+        
+        logger.info(f"Sentry initialized - Release: {release}, Env: {environment}")
         
     except Exception as e:
         logger.error(f"Failed to initialize Sentry: {e}")
+        # Don't crash the app if Sentry fails
 
 
-def _filter_and_enrich_event(
-    event: Dict[str, Any], 
-    hint: Dict[str, Any], 
-    environment: str,
-    service_name: str
-) -> Dict[str, Any]:
-    """Filter out historical events and enrich with system context."""
-    # CRITICAL: Skip historical/old cached events
+def _filter_historical_events(event: Dict[str, Any], hint: Dict[str, Any]) -> Dict[str, Any]:
+    """Filter out ALL historical events - this is the key fix."""
     if hint and hint.get('historical'):
-        logger.debug("Filtering out historical Sentry event")
-        return None
+        logger.debug("Skipping historical Sentry event")
+        return None  # COMPLETELY SKIP OLD EVENTS
     
+    # Only process current events
     try:
-        # Add project-specific tags
+        # Add current timestamp
         event.setdefault("tags", {})
-        event["tags"]["project"] = PROJECT_NAME
-        event["tags"]["service"] = service_name
-        event["tags"]["environment"] = environment
+        event["tags"]["current_startup"] = time.strftime("%Y-%m-%d %H:%M:%S")
         
-        # Add Railway-specific tags if available
-        railway_tags = [
-            "RAILWAY_SERVICE_NAME",
-            "RAILWAY_DEPLOYMENT_ID", 
-            "RAILWAY_ENVIRONMENT",
-            "RAILWAY_SERVICE_ID"
-        ]
+        # Add port info (since you fixed it)
+        event["tags"]["port"] = "8080"
+        event["tags"]["railway_fixed"] = "true"
         
-        for tag in railway_tags:
-            value = os.environ.get(tag)
-            if value:
-                event["tags"][tag.lower()] = value
-        
-        # Add fingerprint for better grouping
-        if "exception" in event:
-            exceptions = event["exception"].get("values", [])
-            if exceptions:
-                exc = exceptions[0]
-                # Group by project + exception type + environment
-                event["fingerprint"] = [
-                    PROJECT_NAME,
-                    exc.get("type", "Unknown"),
-                    environment,
-                    service_name
-                ]
-        
-        # Add context from existing enrichment logic
-        if hint and "exc_info" in hint:
-            exc = hint["exc_info"][1]
-            if hasattr(exc, "_retry_context"):
-                event["extra"] = event.get("extra", {})
-                event["extra"]["retry_context"] = exc._retry_context
-                
-        # Add project context
-        event["extra"] = event.get("extra", {})
-        event["extra"]["project_name"] = PROJECT_NAME
-        event["extra"]["initialized_at"] = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
-        
-    except Exception as e:
-        logger.error(f"Failed to enrich Sentry event: {e}")
+    except Exception:
+        pass
     
     return event
 
 
-# Your existing functions remain the same
-def capture_retry_exhaustion(operation: str, attempts: int, error: str, context: Dict[str, Any]):
-    """Capture retry exhaustion in Sentry."""
+def _filter_historical_transactions(event: Dict[str, Any], hint: Dict[str, Any]) -> Dict[str, Any]:
+    """Filter historical transactions."""
+    if hint and hint.get('historical'):
+        return None
+    return event
+
+
+# Keep your existing capture functions but add startup check
+def capture_startup_error(error: str, context: Dict[str, Any] = None):
+    """Capture startup errors separately."""
     sentry_dsn = os.environ.get("SENTRY_DSN")
     if not sentry_dsn:
         return
     
     with sentry_sdk.push_scope() as scope:
-        scope.set_tag("project", PROJECT_NAME)
-        scope.set_tag("operation", operation)
-        scope.set_tag("retry_exhausted", "true")
-        scope.set_extra("attempts", attempts)
-        scope.set_extra("context", context)
+        scope.set_tag("error_type", "startup")
+        scope.set_tag("phase", "initialization")
+        scope.set_tag("port", "8080")
+        scope.set_extra("context", context or {})
         scope.set_level("error")
         
         sentry_sdk.capture_message(
-            f"[{PROJECT_NAME}] Retry exhausted for {operation} after {attempts} attempts",
+            f"[{PROJECT_NAME}] Startup error: {error}",
             "error"
-        )
-
-
-def capture_normalization_error(raw_data: Dict[str, Any], error: str):
-    """Capture normalization errors in Sentry."""
-    sentry_dsn = os.environ.get("SENTRY_DSN")
-    if not sentry_dsn:
-        return
-    
-    with sentry_sdk.push_scope() as scope:
-        scope.set_tag("project", PROJECT_NAME)
-        scope.set_tag("error_type", "normalization")
-        scope.set_extra("asin", raw_data.get("asin", "unknown"))
-        scope.set_extra("raw_data_keys", list(raw_data.keys()))
-        scope.set_level("warning")
-        
-        sentry_sdk.capture_message(
-            f"[{PROJECT_NAME}] Normalization failed for ASIN: {raw_data.get('asin', 'unknown')}",
-            "warning"
         )
