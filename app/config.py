@@ -23,9 +23,21 @@ class Config:
         self.GOOGLE_SHEETS_CREDENTIALS_JSON = os.environ.get("GOOGLE_SHEETS_CREDENTIALS_JSON", "")
         self.GOOGLE_SHEETS_SPREADSHEET_ID = os.environ.get("GOOGLE_SHEETS_SPREADSHEET_ID", "")
         
+        # FIX: Add missing variable that your main.py references
+        self.GOOGLE_SHEET_ID = self.GOOGLE_SHEETS_SPREADSHEET_ID  # Alias for backward compatibility
+        
         # Application settings
         self.DEBUG = os.environ.get("DEBUG", "false").lower() == "true"
         self.LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
+        
+        # Sentry Configuration (for your sentry.py to work)
+        self.SENTRY_DSN = os.environ.get("SENTRY_DSN", "")
+        self.ENVIRONMENT = os.environ.get("ENVIRONMENT", "production")
+        
+        # Property to check if Sentry is configured
+        @property
+        def has_sentry(self):
+            return bool(self.SENTRY_DSN)
 
 # Create an instance
 config = Config()
