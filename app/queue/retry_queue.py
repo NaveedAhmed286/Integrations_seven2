@@ -26,6 +26,8 @@ class RetryQueue:
         self.pending_tasks: Dict[str, Dict[str, Any]] = {}
         self.callbacks: Dict[str, Callable] = {}
         self.is_processing = False
+        self._processing_task: Optional[asyncio.Task] = None  # Track processing task
+        self._stop_processing = False  # Control flag for stopping
         
         # Create storage directory
         os.makedirs(storage_path, exist_ok=True)
@@ -92,8 +94,8 @@ class RetryQueue:
         )
         
         # Start processing if not already running
-        if not self.is_processing:
-            asyncio.create_task(self._process_retries())
+        if not self.is_processing and not self._stop_processing:
+            self._processing_task = asyncio.create_task(self._process_retries())
         
         return operation_id
     
@@ -114,59 +116,89 @@ class RetryQueue:
     async def _load_operations(self):
         """Load operations from disk on startup."""
         try:
+            loaded_count = 0
             for filename in os.listdir(self.storage_path):
-                if filename.endswith('.json'):
+                if filename.endswith('.json') and not filename.startswith('dead_letter_'):
                     file_path = os.path.join(self.storage_path, filename)
                     
-                    with open(file_path, 'r') as f:
-                        operation = json.load(f)
-                    
-                    # Check if still pending
-                    next_retry = datetime.fromisoformat(operation['next_retry_at'])
-                    if datetime.utcnow() < next_retry:
-                        self.pending_tasks[operation['id']] = operation
-                        logger.debug(f"Loaded pending retry operation: {operation['name']}")
-                    else:
-                        # Schedule for immediate retry
-                        operation['next_retry_at'] = datetime.utcnow().isoformat()
-                        self.pending_tasks[operation['id']] = operation
+                    try:
+                        with open(file_path, 'r') as f:
+                            operation = json.load(f)
                         
+                        # Check if still pending
+                        next_retry = datetime.fromisoformat(operation['next_retry_at'])
+                        if datetime.utcnow() < next_retry:
+                            self.pending_tasks[operation['id']] = operation
+                            loaded_count += 1
+                        else:
+                            # Schedule for immediate retry
+                            operation['next_retry_at'] = datetime.utcnow().isoformat()
+                            self.pending_tasks[operation['id']] = operation
+                            loaded_count += 1
+                            
+                    except Exception as e:
+                        logger.error(f"Failed to load retry operation file {filename}: {e}")
+                        # Try to move corrupted file
+                        try:
+                            corrupted_path = os.path.join(self.storage_path, f"corrupted_{filename}")
+                            os.rename(file_path, corrupted_path)
+                        except:
+                            pass
+            
+            if loaded_count > 0:
+                logger.info(f"Loaded {loaded_count} pending retry operations from disk")
+                
         except Exception as e:
             logger.error(f"Failed to load retry operations: {e}")
     
     async def _process_retries(self):
-        """Process retry queue."""
+        """Process retry queue with proper error handling and exit conditions."""
         if self.is_processing:
             return
         
         self.is_processing = True
+        self._stop_processing = False
         
         try:
             # Load pending operations on first run
             if not self.pending_tasks:
                 await self._load_operations()
             
-            while self.pending_tasks:
+            logger.info(f"Retry queue processor started with {len(self.pending_tasks)} pending tasks")
+            
+            # FIXED: Add proper exit condition and longer sleep
+            while not self._stop_processing and self.pending_tasks:
                 now = datetime.utcnow()
                 ready_operations = [
                     op for op in self.pending_tasks.values()
                     if datetime.fromisoformat(op['next_retry_at']) <= now
                 ]
                 
-                if not ready_operations:
-                    # Wait for next operation
-                    await asyncio.sleep(1)
-                    continue
+                if ready_operations:
+                    # Process ready operations
+                    for operation in ready_operations:
+                        if self._stop_processing:
+                            break
+                        try:
+                            await self._execute_retry(operation)
+                        except Exception as e:
+                            logger.error(f"Error processing retry operation {operation['id']}: {e}")
+                            await asyncio.sleep(1)  # Brief pause on error
+                else:
+                    # No ready operations, sleep longer
+                    await asyncio.sleep(5)  # Increased from 1 second
                 
-                # Process ready operations
-                for operation in ready_operations:
-                    await self._execute_retry(operation)
-                
-                # Sleep briefly to prevent tight loop
+                # Brief pause between iterations
                 await asyncio.sleep(0.1)
         
+        except asyncio.CancelledError:
+            logger.info("Retry queue processing cancelled")
+        except Exception as e:
+            logger.error(f"Retry queue processor crashed: {e}", exc_info=True)
         finally:
             self.is_processing = False
+            self._processing_task = None
+            logger.info("Retry queue processor stopped")
     
     async def _execute_retry(self, operation: Dict[str, Any]):
         """Execute a retry operation."""
@@ -264,14 +296,28 @@ class RetryQueue:
         except Exception as e:
             logger.error(f"Failed to store dead letter: {e}")
     
+    async def stop_processing(self):
+        """Gracefully stop retry queue processing."""
+        self._stop_processing = True
+        
+        if self._processing_task and not self._processing_task.done():
+            self._processing_task.cancel()
+            try:
+                await self._processing_task
+            except asyncio.CancelledError:
+                pass
+        
+        logger.info("Retry queue processing stopped")
+    
     def get_stats(self) -> Dict[str, Any]:
         """Get queue statistics."""
         return {
             "pending_count": len(self.pending_tasks),
             "operations": list(self.callbacks.keys()),
-            "storage_path": self.storage_path
+            "storage_path": self.storage_path,
+            "is_processing": self.is_processing
         }
 
 
-# Global retry queue instance
+# Global retry queue instance - BUT DON'T START IT AUTOMATICALLY
 retry_queue = RetryQueue()
