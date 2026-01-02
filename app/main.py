@@ -5,6 +5,7 @@ Main application entry point.
 import asyncio
 import signal
 import sys
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime
 
@@ -16,7 +17,7 @@ from app.logger import logger
 from app.errors import ExternalServiceError, NormalizationError
 from app.services.apify_service import ApifyService
 from app.services.google_service import google_sheets_service
-from app.memory_manager import MemoryManager
+from app.memory_manager import memory_manager
 from app.normalizers.amazon import AmazonNormalizer
 
 
@@ -24,7 +25,6 @@ from app.normalizers.amazon import AmazonNormalizer
 # Service initialization
 # ======================
 apify_service = ApifyService()
-memory_manager = MemoryManager()
 normalizer = AmazonNormalizer()
 
 
@@ -76,17 +76,6 @@ async def lifespan(app: FastAPI):
     logger.info("⏳ Waiting 10 seconds for services to stabilize...")
     await asyncio.sleep(10)
     
-    # Initialize retry queue but don't start processing immediately
-    # (If you have retry queue, import it here)
-    try:
-        from app.queue.retry_queue import retry_queue
-        app.state.retry_queue = retry_queue
-        logger.info("✅ Retry queue initialized (not started)")
-    except ImportError:
-        logger.info("ℹ️ Retry queue not found, skipping")
-    except Exception as e:
-        logger.warning(f"⚠️ Retry queue init failed: {e}")
-    
     logger.info(f"📊 Startup complete. Services: {services_initialized}")
     logger.info("🚀 Application is now ready to accept requests")
     
@@ -94,14 +83,6 @@ async def lifespan(app: FastAPI):
 
     # Shutdown sequence
     logger.info("Shutting down Amazon Scraper System")
-    
-    # Stop retry queue gracefully if it exists
-    if hasattr(app.state, 'retry_queue'):
-        try:
-            await app.state.retry_queue.stop_processing()
-            logger.info("✅ Retry queue stopped gracefully")
-        except Exception as e:
-            logger.error(f"Failed to stop retry queue: {e}")
     
     # Close Apify service
     try:
@@ -262,11 +243,9 @@ async def test_mock_sheet(request: Request):
         rows = []
 
         for item in results:
-            ai_result = await memory_manager.ai_analyze_product(
-                product_data=item,
-                keyword=keyword
-            )
-
+            # FIXED: Use a simple AI analysis since memory_manager doesn't have ai_analyze_product
+            ai_result = await simple_ai_analysis(item, keyword)
+            
             rows.append({
                 "timestamp": datetime.utcnow().isoformat(),
                 "asin": item.get("asin"),
@@ -312,53 +291,177 @@ async def test_mock_sheet(request: Request):
 
 
 # ======================
-# APIFY WEBHOOK (STEP 2 of POINT 9) - UPDATED FOR ACTOR-WEBHOOK
+# APIFY WEBHOOK - FIXED VERSION
 # ======================
 @app.post("/api/v1/actor-webhook")
 async def apify_webhook(payload: dict):
-    logger.info(f"Received Apify webhook: {payload}")
-    
-    # Apify webhook structure: https://docs.apify.com/platform/integrations/webhooks
-    dataset_id = payload.get("datasetId")
-    actor_run_id = payload.get("runId")
-    keyword = payload.get("keyword", "unknown")
-    
-    if not dataset_id:
-        logger.warning("No datasetId in webhook payload")
-        return {"status": "ignored", "reason": "No datasetId"}
-    
-    # Fetch the actual data from Apify dataset
-    results = await apify_service.fetch_dataset(dataset_id)
-    
-    if not results:
-        logger.warning(f"No results found in dataset {dataset_id}")
-        return {"status": "empty"}
-    
-    logger.info(f"Processing {len(results)} items from dataset {dataset_id}")
-    
-    # Process each item
-    rows = []
-    for item in results:
-        ai_result = await memory_manager.ai_analyze_product(item, keyword)
-        rows.append({
-            "timestamp": datetime.utcnow().isoformat(),
-            "asin": item.get("asin"),
-            "keyword": keyword,
-            "ai_recommendation": ai_result.get("recommendation"),
-            "opportunity_score": ai_result.get("opportunity_score"),
-            "key_advantages": ai_result.get("key_advantages"),
-        })
-    
-    # Write to Google Sheets
-    if rows and google_sheets_service.is_available:
-        await google_sheets_service.append_rows(rows)
-        logger.info(f"Written {len(rows)} rows to Google Sheets")
-    
-    return {"status": "processed", "items": len(rows)}
+    """Handle Apify webhook - FIXED to work with actual MemoryManager."""
+    try:
+        logger.info(f"📬 Received Apify webhook: {payload}")
+        
+        dataset_id = payload.get("datasetId")
+        actor_run_id = payload.get("runId")
+        keyword = payload.get("keyword", "unknown")
+        
+        if not dataset_id:
+            logger.warning("No datasetId in webhook payload")
+            return {"status": "ignored", "reason": "No datasetId"}
+        
+        # Fetch the actual data from Apify dataset
+        results = []
+        if apify_service.is_available:
+            try:
+                results = await apify_service.fetch_dataset(dataset_id)
+                logger.info(f"Fetched {len(results)} results from Apify dataset {dataset_id}")
+            except Exception as e:
+                logger.error(f"Failed to fetch from Apify dataset: {e}")
+                results = []
+        else:
+            logger.warning("Apify service not available, skipping data fetch")
+        
+        if not results:
+            logger.warning(f"No results found in dataset {dataset_id}")
+            return {"status": "empty"}
+        
+        # Process each item with error handling
+        rows = []
+        processed_count = 0
+        
+        for item in results:
+            try:
+                # Use simple AI analysis (since memory_manager doesn't have ai_analyze_product)
+                ai_result = await simple_ai_analysis(item, keyword)
+                
+                # Store in memory if available
+                if memory_manager.initialized:
+                    try:
+                        # Store episodic memory
+                        memory_manager.store_episodic(
+                            client_id="webhook",
+                            analysis_type="product_analysis",
+                            input_data={"asin": item.get("asin"), "keyword": keyword},
+                            output_data=ai_result,
+                            insights=[ai_result.get("recommendation", "")]
+                        )
+                        
+                        # Store long-term memory
+                        await memory_manager.store_long_term(
+                            client_id="webhook",
+                            key=f"product_{item.get('asin', 'unknown')}_{keyword}",
+                            value={
+                                "asin": item.get("asin"),
+                                "keyword": keyword,
+                                "analysis": ai_result,
+                                "timestamp": datetime.utcnow().isoformat()
+                            },
+                            source_analysis="webhook"
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to store in memory: {e}")
+                
+                # Prepare row for Google Sheets
+                rows.append({
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "asin": item.get("asin", "unknown"),
+                    "keyword": keyword,
+                    "ai_recommendation": ai_result.get("recommendation", "Not analyzed"),
+                    "opportunity_score": ai_result.get("opportunity_score", 0),
+                    "key_advantages": ai_result.get("key_advantages", "Not available"),
+                })
+                
+                processed_count += 1
+                
+            except Exception as e:
+                logger.error(f"Failed to process item: {e}")
+                continue  # Skip this item, continue with others
+        
+        # Write to Google Sheets if we have rows and service is available
+        if rows and google_sheets_service.is_available:
+            try:
+                success = await google_sheets_service.append_rows(rows)
+                if success:
+                    logger.info(f"✅ Written {len(rows)} rows to Google Sheets")
+                else:
+                    logger.error("Failed to write to Google Sheets")
+            except Exception as e:
+                logger.error(f"Google Sheets write failed: {e}")
+        
+        return {
+            "status": "processed", 
+            "items": processed_count,
+            "rows_written": len(rows),
+            "services": {
+                "apify": apify_service.is_available,
+                "memory": memory_manager.initialized,
+                "google_sheets": google_sheets_service.is_available
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Webhook processing failed: {e}", exc_info=True)
+        return {"status": "error", "message": str(e)[:100]}
+
+
+async def simple_ai_analysis(product_data: dict, keyword: str) -> dict:
+    """Simple AI analysis fallback since memory_manager doesn't have ai_analyze_product."""
+    try:
+        # Simple logic based on product data
+        rating = product_data.get("product_rating", 0)
+        reviews = product_data.get("count_review", 0)
+        price = product_data.get("price", 0)
+        
+        # Calculate opportunity score (0-100)
+        opportunity_score = 0
+        
+        if rating >= 4.5:
+            opportunity_score += 30
+        elif rating >= 4.0:
+            opportunity_score += 20
+        elif rating >= 3.5:
+            opportunity_score += 10
+            
+        if reviews >= 1000:
+            opportunity_score += 30
+        elif reviews >= 500:
+            opportunity_score += 20
+        elif reviews >= 100:
+            opportunity_score += 10
+            
+        if price and price < 50:
+            opportunity_score += 20
+        elif price and price < 100:
+            opportunity_score += 10
+            
+        # Cap at 100
+        opportunity_score = min(opportunity_score, 100)
+        
+        # Generate recommendation
+        if opportunity_score >= 70:
+            recommendation = "High potential - Consider investing"
+        elif opportunity_score >= 50:
+            recommendation = "Moderate potential - Worth monitoring"
+        else:
+            recommendation = "Low potential - Continue research"
+        
+        return {
+            "recommendation": recommendation,
+            "opportunity_score": opportunity_score,
+            "key_advantages": f"Rating: {rating}, Reviews: {reviews}, Price: {price}",
+            "analysis_type": "simple_analysis"
+        }
+        
+    except Exception as e:
+        logger.error(f"Simple AI analysis failed: {e}")
+        return {
+            "recommendation": "Analysis failed",
+            "opportunity_score": 0,
+            "key_advantages": "Not available",
+            "analysis_type": "failed"
+        }
 
 
 # ======================
-# Debug endpoint to test if app stays alive
+# Debug endpoints
 # ======================
 @app.get("/debug/alive")
 async def debug_alive():
@@ -369,13 +472,35 @@ async def debug_alive():
         "uptime_seconds": time.time() - app_start_time if 'app_start_time' in globals() else 0
     }
 
+@app.get("/debug/memory")
+async def debug_memory():
+    """Debug memory manager"""
+    return {
+        "initialized": memory_manager.initialized,
+        "short_term_available": memory_manager.short_term.is_available,
+        "long_term_available": memory_manager.long_term.is_available,
+        "episodic_count": len(memory_manager.episodic.memories.get("webhook", [])),
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+@app.get("/debug/services")
+async def debug_services():
+    """Check status of all services."""
+    return {
+        "apify_available": apify_service.is_available,
+        "memory_available": memory_manager.initialized,
+        "google_sheets_available": google_sheets_service.is_available,
+        "spreadsheet_id": config.GOOGLE_SHEETS_SPREADSHEET_ID,
+        "apify_api_key_set": bool(config.APIFY_API_KEY),
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
 
 # ======================
 # Local run
 # ======================
 if __name__ == "__main__":
     import os
-    import time
     import uvicorn
     
     # Set app start time for debugging
