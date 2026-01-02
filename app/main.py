@@ -118,16 +118,17 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    """Health check for Railway - returns 200 even if some services are degraded"""
-    # Simple health check - just check if web server is running
-    # Don't check all services as Railway will kill container if any fails
+    """
+    SUPER SIMPLE HEALTH CHECK FOR RAILWAY
+    Always returns 200 immediately - no service checks!
+    """
     return JSONResponse(
         status_code=200,
         content={
             "status": "healthy",
-            "timestamp": datetime.utcnow().isoformat(),
             "message": "Service is running",
-            "simple_check": True  # Indicate this is a simple check
+            "timestamp": datetime.utcnow().isoformat(),
+            "simple_check": True
         }
     )
 
@@ -160,11 +161,14 @@ async def health_detailed():
 # ======================
 @app.get("/ready")
 async def readiness_check():
-    """Kubernetes/Platform readiness probe"""
-    return {
-        "status": "ready",
-        "timestamp": datetime.utcnow().isoformat()
-    }
+    """Kubernetes/Platform readiness probe - ALWAYS READY"""
+    return JSONResponse(
+        status_code=200,
+        content={
+            "status": "ready",
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    )
 
 @app.get("/live")
 async def liveness_check():
@@ -243,7 +247,7 @@ async def test_mock_sheet(request: Request):
         rows = []
 
         for item in results:
-            # FIXED: Use a simple AI analysis since memory_manager doesn't have ai_analyze_product
+            # Simple AI analysis
             ai_result = await simple_ai_analysis(item, keyword)
             
             rows.append({
@@ -291,11 +295,11 @@ async def test_mock_sheet(request: Request):
 
 
 # ======================
-# APIFY WEBHOOK - FIXED VERSION
+# APIFY WEBHOOK
 # ======================
 @app.post("/api/v1/actor-webhook")
 async def apify_webhook(payload: dict):
-    """Handle Apify webhook - FIXED to work with actual MemoryManager."""
+    """Handle Apify webhook."""
     try:
         logger.info(f"📬 Received Apify webhook: {payload}")
         
@@ -329,7 +333,7 @@ async def apify_webhook(payload: dict):
         
         for item in results:
             try:
-                # Use simple AI analysis (since memory_manager doesn't have ai_analyze_product)
+                # Use simple AI analysis
                 ai_result = await simple_ai_analysis(item, keyword)
                 
                 # Store in memory if available
@@ -403,7 +407,7 @@ async def apify_webhook(payload: dict):
 
 
 async def simple_ai_analysis(product_data: dict, keyword: str) -> dict:
-    """Simple AI analysis fallback since memory_manager doesn't have ai_analyze_product."""
+    """Simple AI analysis fallback."""
     try:
         # Simple logic based on product data
         rating = product_data.get("product_rating", 0)
