@@ -1,15 +1,15 @@
 #!/bin/bash
-# Start the FastAPI app for Railway
+# Start the FastAPI app
 
 echo "========================================="
 echo "Starting Amazon Scraper System"
 echo "Time: $(date)"
 echo "========================================="
 
-# Wait longer for Railway health check
-echo "Waiting 15 seconds for system to stabilize..."
-sleep 15
+# Wait for system to stabilize
+echo "Waiting 10 seconds..."
+sleep 10
 
 # Start the application
-echo "Starting Uvicorn server on port 8080..."
-exec python -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --log-level info
+echo "Starting Uvicorn server..."
+exec python -m uvicorn main:app --host 0.0.0.0 --port 8080 --log-level info
