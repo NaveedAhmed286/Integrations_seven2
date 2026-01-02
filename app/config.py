@@ -1,4 +1,8 @@
 import os
+import logging
+
+# Set up logger
+logger = logging.getLogger(__name__)
 
 class Config:
     def __init__(self):
@@ -8,6 +12,11 @@ class Config:
         self.REDIS_TTL = int(os.environ.get("REDIS_TTL", "86400"))
         self.MAX_MEMORIES_PER_CLIENT = int(os.environ.get("MAX_MEMORIES_PER_CLIENT", "100"))
         self.MAX_EPISODIC_MEMORIES = int(os.environ.get("MAX_EPISODIC_MEMORIES", "50"))
+        
+        # Fix for Railway PostgreSQL SSL requirement
+        if self.DATABASE_URL and "railway" in self.DATABASE_URL and "?sslmode=" not in self.DATABASE_URL:
+            self.DATABASE_URL = self.DATABASE_URL + "?sslmode=require"
+            logger.info("Added SSL mode to PostgreSQL URL for Railway")
         
         # Retry configuration
         self.MAX_RETRIES = int(os.environ.get("MAX_RETRIES", "3"))
@@ -34,10 +43,17 @@ class Config:
         self.SENTRY_DSN = os.environ.get("SENTRY_DSN", "")
         self.ENVIRONMENT = os.environ.get("ENVIRONMENT", "production")
         
-        # Property to check if Sentry is configured
-        @property
-        def has_sentry(self):
-            return bool(self.SENTRY_DSN)
+        # Connection pool settings for Railway
+        self.DB_POOL_SIZE = int(os.environ.get("DB_POOL_SIZE", "5"))
+        self.DB_POOL_RECYCLE = int(os.environ.get("DB_POOL_RECYCLE", "300"))
+        self.REDIS_CONNECT_TIMEOUT = int(os.environ.get("REDIS_CONNECT_TIMEOUT", "5"))
+        
+        logger.info(f"Config initialized. Environment: {self.ENVIRONMENT}")
+    
+    # Property to check if Sentry is configured
+    @property
+    def has_sentry(self):
+        return bool(self.SENTRY_DSN)
 
 # Create an instance
 config = Config()
