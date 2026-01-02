@@ -35,27 +35,50 @@ normalizer = AmazonNormalizer()
 async def lifespan(app: FastAPI):
     logger.info("Starting Amazon Scraper System")
 
+    # Initialize services with better error handling
+    services_initialized = {
+        "apify": False,
+        "memory": False,
+        "google_sheets": False
+    }
+    
+    # Apify service (critical)
     try:
         await apify_service.initialize()
+        services_initialized["apify"] = True
+        logger.info("✅ Apify service initialized")
     except Exception as e:
-        logger.error(f"Apify init failed: {e}")
-
+        logger.error(f"❌ Apify init failed: {e}")
+        # Don't crash - app can still handle some requests
+    
+    # Memory manager (critical)
     try:
         await memory_manager.initialize()
+        services_initialized["memory"] = True
+        logger.info("✅ Memory manager initialized")
     except Exception as e:
-        logger.error(f"Memory manager init failed: {e}")
-
+        logger.error(f"❌ Memory manager init failed: {e}")
+        # Don't crash
+    
+    # Google Sheets (non-critical - can fail without breaking app)
     try:
         await google_sheets_service.initialize()
+        services_initialized["google_sheets"] = google_sheets_service.is_available
+        if google_sheets_service.is_available:
+            logger.info("✅ Google Sheets service initialized")
+        else:
+            logger.warning("⚠️ Google Sheets service disabled (credentials issue)")
     except Exception as e:
-        logger.error(f"Google Sheets init failed: {e}")
-
+        logger.warning(f"⚠️ Google Sheets init failed (non-critical): {e}")
+        services_initialized["google_sheets"] = False
+    
+    logger.info(f"📊 Startup complete. Services: {services_initialized}")
+    
     yield
 
     logger.info("Shutting down Amazon Scraper System")
-
     await apify_service.close()
-   
+
 
 # ======================
 # FastAPI app
@@ -83,6 +106,7 @@ async def root():
 
 @app.get("/health")
 async def health_check():
+    """Health check for Railway - returns 200 even if some services are degraded"""
     services = {
         "apify": apify_service.is_available,
         "memory": memory_manager.initialized,
@@ -90,14 +114,25 @@ async def health_check():
         "postgres": memory_manager.long_term.is_available,
         "google_sheets": google_sheets_service.is_available
     }
+    
+    # Determine status: healthy if web server is running
+    # Google Sheets can be unavailable without making app unhealthy
+    critical_services_ok = (
+        services["apify"] or  # Apify can be down temporarily
+        services["memory"]    # Memory should be available
+    )
+    
+    status = "healthy" if critical_services_ok else "degraded"
 
-    status = "healthy" if all(services.values()) else "degraded"
-
-    return {
-        "status": status,
-        "services": services,
-        "timestamp": datetime.utcnow().isoformat()
-    }
+    return JSONResponse(
+        status_code=200,  # ALWAYS return 200 to Railway
+        content={
+            "status": status,
+            "services": services,
+            "timestamp": datetime.utcnow().isoformat(),
+            "message": "Service is running" if status == "healthy" else "Some services degraded"
+        }
+    )
 
 
 # ======================
@@ -163,9 +198,10 @@ async def search_amazon(request: Request):
             except NormalizationError as e:
                 logger.warning(f"Normalization failed: {e}")
 
+        # Use config.GOOGLE_SHEETS_SPREADSHEET_ID instead of config.GOOGLE_SHEET_ID
         if google_sheets_service.is_available and normalized_results:
             await google_sheets_service.append_to_sheet(
-                spreadsheet_id=config.GOOGLE_SHEET_ID,
+                spreadsheet_id=config.GOOGLE_SHEETS_SPREADSHEET_ID,  # FIXED
                 worksheet_name="Sheet1",
                 data=normalized_results
             )
