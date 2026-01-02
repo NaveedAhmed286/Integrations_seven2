@@ -1,11 +1,18 @@
 #!/bin/bash
-# Start the FastAPI app
+# Start the FastAPI app for Railway
+# Railway uses port 8080 by default
 
-# FIX: Always use port 8080 for Railway (not 8000)
+# Always use port 8080 for Railway compatibility
 PORT=8080
-echo "Starting Amazon Scraper System on port $PORT"
+echo "========================================="
+echo "Starting Amazon Scraper System"
+echo "Port: $PORT | Time: $(date)"
+echo "========================================="
 
-# Small delay to avoid immediate health check failure
-sleep 2
+# Add a delay to allow services to initialize
+echo "Waiting 3 seconds before starting..."
+sleep 3
 
-exec uvicorn app.main:app --host 0.0.0.0 --port $PORT
+# Start the application
+echo "Starting Uvicorn server..."
+exec python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT --log-level info
