@@ -72,12 +72,43 @@ async def lifespan(app: FastAPI):
         logger.warning(f"⚠️ Google Sheets init failed (non-critical): {e}")
         services_initialized["google_sheets"] = False
     
+    # CRITICAL: Wait for services to stabilize before starting background tasks
+    logger.info("⏳ Waiting 10 seconds for services to stabilize...")
+    await asyncio.sleep(10)
+    
+    # Initialize retry queue but don't start processing immediately
+    # (If you have retry queue, import it here)
+    try:
+        from app.queue.retry_queue import retry_queue
+        app.state.retry_queue = retry_queue
+        logger.info("✅ Retry queue initialized (not started)")
+    except ImportError:
+        logger.info("ℹ️ Retry queue not found, skipping")
+    except Exception as e:
+        logger.warning(f"⚠️ Retry queue init failed: {e}")
+    
     logger.info(f"📊 Startup complete. Services: {services_initialized}")
+    logger.info("🚀 Application is now ready to accept requests")
     
     yield
 
+    # Shutdown sequence
     logger.info("Shutting down Amazon Scraper System")
-    await apify_service.close()
+    
+    # Stop retry queue gracefully if it exists
+    if hasattr(app.state, 'retry_queue'):
+        try:
+            await app.state.retry_queue.stop_processing()
+            logger.info("✅ Retry queue stopped gracefully")
+        except Exception as e:
+            logger.error(f"Failed to stop retry queue: {e}")
+    
+    # Close Apify service
+    try:
+        await apify_service.close()
+        logger.info("✅ Apify service closed")
+    except Exception as e:
+        logger.error(f"Failed to close Apify service: {e}")
 
 
 # ======================
@@ -107,6 +138,22 @@ async def root():
 @app.get("/health")
 async def health_check():
     """Health check for Railway - returns 200 even if some services are degraded"""
+    # Simple health check - just check if web server is running
+    # Don't check all services as Railway will kill container if any fails
+    return JSONResponse(
+        status_code=200,
+        content={
+            "status": "healthy",
+            "timestamp": datetime.utcnow().isoformat(),
+            "message": "Service is running",
+            "simple_check": True  # Indicate this is a simple check
+        }
+    )
+
+
+@app.get("/health-detailed")
+async def health_detailed():
+    """Detailed health check (for internal use only)"""
     services = {
         "apify": apify_service.is_available,
         "memory": memory_manager.initialized,
@@ -115,52 +162,28 @@ async def health_check():
         "google_sheets": google_sheets_service.is_available
     }
     
-    # Determine status: healthy if web server is running
-    # Google Sheets can be unavailable without making app unhealthy
-    critical_services_ok = (
-        services["apify"] or  # Apify can be down temporarily
-        services["memory"]    # Memory should be available
-    )
-    
+    # Determine status
+    critical_services_ok = services["apify"] or services["memory"]
     status = "healthy" if critical_services_ok else "degraded"
 
-    return JSONResponse(
-        status_code=200,  # ALWAYS return 200 to Railway
-        content={
-            "status": status,
-            "services": services,
-            "timestamp": datetime.utcnow().isoformat(),
-            "message": "Service is running" if status == "healthy" else "Some services degraded"
-        }
-    )
+    return {
+        "status": status,
+        "services": services,
+        "timestamp": datetime.utcnow().isoformat(),
+        "message": "All services operational" if status == "healthy" else "Some services degraded"
+    }
 
 
 # ======================
-# NEW: Readiness endpoints for Railway health check
+# Readiness/Liveness endpoints
 # ======================
 @app.get("/ready")
 async def readiness_check():
     """Kubernetes/Platform readiness probe"""
-    services = {
-        "apify": apify_service.is_available,
-        "memory": memory_manager.initialized,
-        "redis": memory_manager.short_term.is_available,
-        "postgres": memory_manager.long_term.is_available,
-        "google_sheets": google_sheets_service.is_available
+    return {
+        "status": "ready",
+        "timestamp": datetime.utcnow().isoformat()
     }
-    
-    # App is ready if at least config is loaded
-    if any(services.values()):  # At least one service is available
-        return {
-            "status": "ready",
-            "services": services,
-            "timestamp": datetime.utcnow().isoformat()
-        }
-    else:
-        raise HTTPException(
-            status_code=503, 
-            detail=f"Application starting up. Services: {services}"
-        )
 
 @app.get("/live")
 async def liveness_check():
@@ -198,10 +221,10 @@ async def search_amazon(request: Request):
             except NormalizationError as e:
                 logger.warning(f"Normalization failed: {e}")
 
-        # Use config.GOOGLE_SHEETS_SPREADSHEET_ID instead of config.GOOGLE_SHEET_ID
+        # Use config.GOOGLE_SHEETS_SPREADSHEET_ID
         if google_sheets_service.is_available and normalized_results:
             await google_sheets_service.append_to_sheet(
-                spreadsheet_id=config.GOOGLE_SHEETS_SPREADSHEET_ID,  # FIXED
+                spreadsheet_id=config.GOOGLE_SHEETS_SPREADSHEET_ID,
                 worksheet_name="Sheet1",
                 data=normalized_results
             )
@@ -335,11 +358,28 @@ async def apify_webhook(payload: dict):
 
 
 # ======================
+# Debug endpoint to test if app stays alive
+# ======================
+@app.get("/debug/alive")
+async def debug_alive():
+    """Debug endpoint to check if app is still running"""
+    return {
+        "alive": True,
+        "timestamp": datetime.utcnow().isoformat(),
+        "uptime_seconds": time.time() - app_start_time if 'app_start_time' in globals() else 0
+    }
+
+
+# ======================
 # Local run
 # ======================
 if __name__ == "__main__":
     import os
+    import time
     import uvicorn
-
-    port = int(os.environ.get("PORT", 8000))
+    
+    # Set app start time for debugging
+    app_start_time = time.time()
+    
+    port = int(os.environ.get("PORT", 8080))  # Default to 8080 for Railway
     uvicorn.run(app, host="0.0.0.0", port=port)
