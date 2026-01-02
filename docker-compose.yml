@@ -1,1 +1,7 @@
-
+# Minimal docker-compose.yml
+version: '3.8'
+services:
+  app:
+    build: .
+    ports:
+      - "8080:8080"
