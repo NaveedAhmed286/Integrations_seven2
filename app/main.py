@@ -454,6 +454,7 @@ async def simple_ai_analysis(product_data: dict, keyword: str) -> dict:
 # ======================
 # Debug endpoints
 # ======================
+
 @app.get("/debug/alive")
 async def debug_alive():
     """Debug endpoint to check if app is still running"""
@@ -486,6 +487,39 @@ async def debug_services():
         "timestamp": datetime.utcnow().isoformat()
     }
 
+# ADD THIS NEW ENDPOINT HERE:
+@app.get("/debug/google-sheets")
+async def debug_google_sheets():
+    """Debug Google Sheets connection."""
+    try:
+        if not google_sheets_service.is_available:
+            return {"error": "Google Sheets service not available"}
+        
+        # Test with minimal data
+        test_data = [{
+            "timestamp": datetime.utcnow().isoformat(),
+            "asin": "TEST123",
+            "keyword": "test",
+            "ai_recommendation": "Test recommendation",
+            "opportunity_score": 50,
+            "key_advantages": "Test advantages"
+        }]
+        
+        result = await google_sheets_service.append_to_sheet(
+            spreadsheet_id=config.GOOGLE_SHEETS_SPREADSHEET_ID,
+            worksheet_name="Sheet1",
+            data=test_data
+        )
+        
+        return {"success": True, "rows_appended": result}
+        
+    except Exception as e:
+        return {
+            "error": str(e), 
+            "spreadsheet_id": config.GOOGLE_SHEETS_SPREADSHEET_ID,
+            "worksheet_name": "Sheet1",
+            "error_type": type(e).__name__
+        }
 
 # ======================
 # Local run
@@ -493,9 +527,10 @@ async def debug_services():
 if __name__ == "__main__":
     import os
     import uvicorn
-    
-    # Set app start time for debugging
-    app_start_time = time.time()
-    
-    port = int(os.environ.get("PORT", 8080))  # Default to 8080 for Railway
-    uvicorn.run(app, host="0.0.0.0", port=port)
+
+
+
+
+
+
+
