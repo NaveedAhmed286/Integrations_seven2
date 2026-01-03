@@ -230,77 +230,6 @@ async def search_amazon(request: Request):
 
 
 # ======================
-# MOCK TEST ENDPOINT (STEP 1 of POINT 9)
-# ======================
-@app.post("/api/v1/test-mock-sheet")
-async def test_mock_sheet(request: Request):
-    try:
-        payload = await request.json()
-
-        keyword = payload.get("keyword")
-        domain_code = payload.get("domain_code", "com")
-        results = payload.get("results", [])
-
-        if not keyword or not results:
-            raise HTTPException(status_code=400, detail="keyword and results required")
-
-        rows = []
-
-        for item in results:
-            # Simple AI analysis
-            ai_result = await simple_ai_analysis(item, keyword)
-            
-            rows.append({
-                "timestamp": datetime.utcnow().isoformat(),
-                "asin": item.get("asin"),
-                "keyword": keyword,
-                "domain_code": domain_code,
-                "search_result_position": item.get("search_result_position"),
-                "count_review": item.get("count_review"),
-                "product_rating": item.get("product_rating"),
-                "price": item.get("price"),
-                "retail_price": item.get("retail_price"),
-                "img_url": item.get("img_url"),
-                "dp_url": item.get("dp_url"),
-                "sponsored": item.get("sponsored"),
-                "prime": item.get("prime"),
-                "product_description": item.get("product_description"),
-                "sales_volume": item.get("sales_volume"),
-                "manufacturer": item.get("manufacturer"),
-                "page": item.get("page"),
-                "sort_strategy": item.get("sort_strategy"),
-                "result_count": item.get("result_count"),
-                "similar_keywords": ", ".join(item.get("similar_keywords", [])),
-                "categories": ", ".join(item.get("categories", [])),
-                "variations": str(item.get("variations")),
-                "product_details": str(item.get("product_details")),
-                "availability": item.get("availability"),
-                "scraped_at": item.get("scraped_at"),
-                "ai_recommendation": ai_result.get("recommendation"),
-                "opportunity_score": ai_result.get("opportunity_score"),
-                "key_advantages": ai_result.get("key_advantages"),
-            })
-
-        # FIXED: Changed from append_rows to append_to_sheet
-        if google_sheets_service.is_available and rows:
-            await google_sheets_service.append_to_sheet(
-                spreadsheet_id=config.GOOGLE_SHEETS_SPREADSHEET_ID,
-                worksheet_name="Test_Sheet",
-                data=rows
-            )
-
-        return {
-            "success": True,
-            "rows_written": len(rows),
-            "message": "Mock test successful"
-        }
-
-    except Exception as e:
-        logger.error(f"Mock test failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Mock sheet test failed")
-
-
-# ======================
 # APIFY WEBHOOK
 # ======================
 @app.post("/api/v1/actor-webhook")
@@ -420,7 +349,7 @@ async def simple_ai_analysis(product_data: dict, keyword: str) -> dict:
     """Simple AI analysis fallback."""
     try:
         # ADDED: Log start of analysis
-        logger.info(f"🔍 Starting AI analysis for ASIN: {product_data.get('asin', 'unknown')}")
+        logger.error(f"🔍 Starting AI analysis for ASIN: {product_data.get('asin', 'unknown')}")
         
         # FIXED: Convert all values to proper types before comparison
         
@@ -497,7 +426,7 @@ async def simple_ai_analysis(product_data: dict, keyword: str) -> dict:
             recommendation = "Low potential - Continue research"
         
         # ADDED: Log completion of analysis
-        logger.info(f"✅ AI analysis completed. Score: {opportunity_score}/100 for ASIN: {product_data.get('asin', 'unknown')}")
+        logger.error(f"✅ AI analysis completed. Score: {opportunity_score}/100 for ASIN: {product_data.get('asin', 'unknown')}")
         
         return {
             "recommendation": recommendation,
