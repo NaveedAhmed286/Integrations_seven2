@@ -153,7 +153,8 @@ class ApifyService:
                 timeout=aiohttp.ClientTimeout(total=180)
             )
             
-            if response.status != 200:
+            # FIXED: Accept both 200 and 201 status codes
+            if response.status not in [200, 201]:
                 error_text = await response.text()
                 logger.error(f"Apify API error {response.status}: {error_text[:200]}")
                 raise ExternalServiceError(
@@ -221,7 +222,8 @@ class ApifyService:
                 timeout=aiohttp.ClientTimeout(total=60)
             )
             
-            if response.status != 200:
+            # FIXED: Accept both 200 and 201 status codes
+            if response.status not in [200, 201]:
                 error_text = await response.text()
                 logger.error(f"Failed to fetch dataset {dataset_id}: {error_text[:200]}")
                 raise ExternalServiceError(f"Failed to fetch dataset: {response.status}")
@@ -260,7 +262,8 @@ class ApifyService:
         try:
             response = await self.session.get(f"{self.base_url}/acts/{actor_to_check}")
             
-            if response.status == 200:
+            # FIXED: Accept both 200 and 201 status codes
+            if response.status in [200, 201]:
                 return await response.json()
             else:
                 return {"status": "error", "code": response.status}
