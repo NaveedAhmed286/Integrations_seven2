@@ -281,7 +281,13 @@ async def test_mock_sheet(request: Request):
                 "key_advantages": ai_result.get("key_advantages"),
             })
 
-        await google_sheets_service.append_rows(rows)
+        # FIXED: Changed from append_rows to append_to_sheet
+        if google_sheets_service.is_available and rows:
+            await google_sheets_service.append_to_sheet(
+                spreadsheet_id=config.GOOGLE_SHEETS_SPREADSHEET_ID,
+                worksheet_name="Test_Sheet",
+                data=rows
+            )
 
         return {
             "success": True,
@@ -379,10 +385,14 @@ async def apify_webhook(payload: dict):
                 logger.error(f"Failed to process item: {e}")
                 continue  # Skip this item, continue with others
         
-        # Write to Google Sheets if we have rows and service is available
+        # FIXED: Changed from append_rows to append_to_sheet
         if rows and google_sheets_service.is_available:
             try:
-                success = await google_sheets_service.append_rows(rows)
+                success = await google_sheets_service.append_to_sheet(
+                    spreadsheet_id=config.GOOGLE_SHEETS_SPREADSHEET_ID,
+                    worksheet_name="Webhook_Data",
+                    data=rows
+                )
                 if success:
                     logger.info(f"✅ Written {len(rows)} rows to Google Sheets")
                 else:
@@ -409,11 +419,47 @@ async def apify_webhook(payload: dict):
 async def simple_ai_analysis(product_data: dict, keyword: str) -> dict:
     """Simple AI analysis fallback."""
     try:
-        # Simple logic based on product data
-        rating = product_data.get("product_rating", 0)
-        reviews = product_data.get("count_review", 0)
-        price = product_data.get("price", 0)
+        # FIXED: Convert all values to proper types before comparison
         
+        # Convert rating to float
+        rating_raw = product_data.get("product_rating", 0)
+        if isinstance(rating_raw, str):
+            # Try to extract number from string (e.g., "4.5 out of 5" -> 4.5)
+            import re
+            numbers = re.findall(r'\d+\.?\d*', rating_raw)
+            rating = float(numbers[0]) if numbers else 0.0
+        elif isinstance(rating_raw, (int, float)):
+            rating = float(rating_raw)
+        else:
+            rating = 0.0
+        
+        # Convert reviews to integer
+        reviews_raw = product_data.get("count_review", 0)
+        if isinstance(reviews_raw, str):
+            # Remove commas and non-numeric characters
+            import re
+            numbers = re.findall(r'\d+', reviews_raw.replace(',', ''))
+            reviews = int(numbers[0]) if numbers else 0
+        elif isinstance(reviews_raw, (int, float)):
+            reviews = int(reviews_raw)
+        else:
+            reviews = 0
+        
+        # Convert price to float
+        price_raw = product_data.get("price", 0)
+        price = 0.0
+        if price_raw:
+            if isinstance(price_raw, str):
+                # Remove currency symbols, commas, and convert to float
+                import re
+                # Extract numbers with decimal points
+                numbers = re.findall(r'\d+\.?\d*', price_raw.replace(',', ''))
+                if numbers:
+                    price = float(numbers[0])
+            elif isinstance(price_raw, (int, float)):
+                price = float(price_raw)
+        
+        # FIXED: Now safe to compare numbers with numbers
         # Calculate opportunity score (0-100)
         opportunity_score = 0
         
@@ -451,7 +497,12 @@ async def simple_ai_analysis(product_data: dict, keyword: str) -> dict:
             "recommendation": recommendation,
             "opportunity_score": opportunity_score,
             "key_advantages": f"Rating: {rating}, Reviews: {reviews}, Price: {price}",
-            "analysis_type": "simple_analysis"
+            "analysis_type": "simple_analysis",
+            "normalized_values": {
+                "rating": rating,
+                "reviews": reviews,
+                "price": price
+            }
         }
         
     except Exception as e:
