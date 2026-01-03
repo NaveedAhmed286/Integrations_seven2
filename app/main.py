@@ -319,7 +319,7 @@ async def apify_webhook(payload: dict):
             try:
                 success = await google_sheets_service.append_to_sheet(
                     spreadsheet_id=config.GOOGLE_SHEETS_SPREADSHEET_ID,
-                    worksheet_name="sheet1",
+                    worksheet_name="Sheet1",
                     data=rows
                 )
                 if success:
