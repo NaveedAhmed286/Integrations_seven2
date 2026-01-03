@@ -140,7 +140,7 @@ class ApifyService:
                     "apifyProxyGroups": ["RESIDENTIAL"]
                 },
                 "maxItems": max_results,
-                "waitUntil": "networkidle2",
+                "waitUntil": ["networkidle2"],
                 "dynamicContentWaitSecs": 10
             }
             
