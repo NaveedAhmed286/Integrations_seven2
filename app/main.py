@@ -109,7 +109,7 @@ app = FastAPI(
 @app.get("/")
 async def root():
     return {
-        "service": "Amazon Scraper System",
+        "service": "Amazon Scraper API",
         "version": "1.0.0",
         "status": "operational",
         "timestamp": datetime.utcnow().isoformat()
@@ -419,6 +419,9 @@ async def apify_webhook(payload: dict):
 async def simple_ai_analysis(product_data: dict, keyword: str) -> dict:
     """Simple AI analysis fallback."""
     try:
+        # ADDED: Log start of analysis
+        logger.info(f"🔍 Starting AI analysis for ASIN: {product_data.get('asin', 'unknown')}")
+        
         # FIXED: Convert all values to proper types before comparison
         
         # Convert rating to float
@@ -493,6 +496,9 @@ async def simple_ai_analysis(product_data: dict, keyword: str) -> dict:
         else:
             recommendation = "Low potential - Continue research"
         
+        # ADDED: Log completion of analysis
+        logger.info(f"✅ AI analysis completed. Score: {opportunity_score}/100 for ASIN: {product_data.get('asin', 'unknown')}")
+        
         return {
             "recommendation": recommendation,
             "opportunity_score": opportunity_score,
@@ -506,7 +512,8 @@ async def simple_ai_analysis(product_data: dict, keyword: str) -> dict:
         }
         
     except Exception as e:
-        logger.error(f"Simple AI analysis failed: {e}")
+        # ADDED: Log failure
+        logger.error(f"❌ AI analysis failed for {product_data.get('asin', 'unknown')}: {e}")
         return {
             "recommendation": "Analysis failed",
             "opportunity_score": 0,
