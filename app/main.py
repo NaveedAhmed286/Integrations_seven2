@@ -337,10 +337,9 @@ async def apify_webhook(payload: dict):
 async def simple_ai_analysis(product_data: dict, keyword: str) -> dict:
     """Simple AI analysis fallback."""
     try:
-        # ADDED: Log start of analysis
-        logger.error(f"🔍 Starting AI analysis for ASIN: {product_data.get('asin', 'unknown')}")
+        # Log start of analysis
+        logger.info(f"🔍 Starting AI analysis for ASIN: {product_data.get('asin', 'unknown')}")
         
-        # FIXED: Convert all values to proper types before comparison
         # Convert rating to float
         rating_raw = product_data.get("product_rating", 0)
         if isinstance(rating_raw, str):
@@ -379,7 +378,6 @@ async def simple_ai_analysis(product_data: dict, keyword: str) -> dict:
             elif isinstance(price_raw, (int, float)):
                 price = float(price_raw)
         
-        # FIXED: Now safe to compare numbers with numbers
         # Calculate opportunity score (0-100)
         opportunity_score = 0
         
@@ -416,16 +414,16 @@ async def simple_ai_analysis(product_data: dict, keyword: str) -> dict:
             recommendation = "Low potential - Continue research"
             analysis_type = "low_potential"
         
-        # ADDED: Log completion of analysis
-        logger.error(f"✅ AI analysis completed. Score: {opportunity_score}/100 for ASIN: {product_data.get('asin', 'unknown')}")
+        # Log completion of analysis
+        logger.info(f"✅ AI analysis completed. Score: {opportunity_score}/100 for ASIN: {product_data.get('asin', 'unknown')}")
         
         return {
             "recommendation": recommendation,
             "opportunity_score": opportunity_score,
-            # Keep key_advantages for backward compatibility (not used in sheets anymore)
+            # Keep key_advantages for backward compatibility
             "key_advantages": f"Rating: {rating}, Reviews: {reviews}, Price: {price}",
             "analysis_type": analysis_type,
-            "normalized_values": {  # Added: Clean, separated values for sheets
+            "normalized_values": {
                 "rating": rating,
                 "reviews": reviews,
                 "price": price
@@ -433,7 +431,7 @@ async def simple_ai_analysis(product_data: dict, keyword: str) -> dict:
         }
     
     except Exception as e:
-        # ADDED: Log failure
+        # Log failure
         logger.error(f"❌ AI analysis failed for {product_data.get('asin', 'unknown')}: {e}")
         return {
             "recommendation": "Analysis failed",
@@ -482,7 +480,6 @@ async def debug_services():
         "timestamp": datetime.utcnow().isoformat()
     }
 
-# ADD THIS NEW ENDPOINT HERE:
 @app.get("/debug/google-sheets")
 async def debug_google_sheets():
     """Debug Google Sheets connection."""
