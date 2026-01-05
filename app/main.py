@@ -1,17 +1,12 @@
-"""
-Main application entry point.
-"""
-
+""" Main application entry point. """
 import asyncio
 import signal
 import sys
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime
-
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
-
 from app.config import config
 from app.logger import logger
 from app.errors import ExternalServiceError, NormalizationError
@@ -20,13 +15,11 @@ from app.services.google_service import google_sheets_service
 from app.memory_manager import memory_manager
 from app.normalizers.amazon import AmazonNormalizer
 
-
 # ======================
 # Service initialization
 # ======================
 apify_service = ApifyService()
 normalizer = AmazonNormalizer()
-
 
 # ======================
 # App lifespan
@@ -34,7 +27,7 @@ normalizer = AmazonNormalizer()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting Amazon Scraper System")
-
+    
     # Initialize services with better error handling
     services_initialized = {
         "apify": False,
@@ -80,7 +73,7 @@ async def lifespan(app: FastAPI):
     logger.info("🚀 Application is now ready to accept requests")
     
     yield
-
+    
     # Shutdown sequence
     logger.info("Shutting down Amazon Scraper System")
     
@@ -91,7 +84,6 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Failed to close Apify service: {e}")
 
-
 # ======================
 # FastAPI app
 # ======================
@@ -101,7 +93,6 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan
 )
-
 
 # ======================
 # Basic endpoints
@@ -114,7 +105,6 @@ async def root():
         "status": "operational",
         "timestamp": datetime.utcnow().isoformat()
     }
-
 
 @app.get("/health")
 async def health_check():
@@ -132,7 +122,6 @@ async def health_check():
         }
     )
 
-
 @app.get("/health-detailed")
 async def health_detailed():
     """Detailed health check (for internal use only)"""
@@ -147,14 +136,13 @@ async def health_detailed():
     # Determine status
     critical_services_ok = services["apify"] or services["memory"]
     status = "healthy" if critical_services_ok else "degraded"
-
+    
     return {
         "status": status,
         "services": services,
         "timestamp": datetime.utcnow().isoformat(),
         "message": "All services operational" if status == "healthy" else "Some services degraded"
     }
-
 
 # ======================
 # Readiness/Liveness endpoints
@@ -178,7 +166,6 @@ async def liveness_check():
         "timestamp": datetime.utcnow().isoformat()
     }
 
-
 # ======================
 # REAL SEARCH ENDPOINT
 # ======================
@@ -186,18 +173,17 @@ async def liveness_check():
 async def search_amazon(request: Request):
     try:
         data = await request.json()
-
         keyword = data.get("keyword", "").strip()
         domain = data.get("domain", "com")
         max_results = min(data.get("max_results", 10), 50)
-
+        
         if not keyword:
             raise HTTPException(status_code=400, detail="Keyword is required")
-
+        
         raw_results = await apify_service.scrape_amazon_search(
             keyword, domain, max_results
         )
-
+        
         normalized_results = []
         for raw in raw_results:
             try:
@@ -205,7 +191,7 @@ async def search_amazon(request: Request):
                 normalized_results.append(product.dict())
             except NormalizationError as e:
                 logger.warning(f"Normalization failed: {e}")
-
+        
         # Use config.GOOGLE_SHEETS_SPREADSHEET_ID
         if google_sheets_service.is_available and normalized_results:
             await google_sheets_service.append_to_sheet(
@@ -213,7 +199,7 @@ async def search_amazon(request: Request):
                 worksheet_name="Sheet1",
                 data=normalized_results
             )
-
+        
         return {
             "success": True,
             "keyword": keyword,
@@ -221,13 +207,12 @@ async def search_amazon(request: Request):
             "results": normalized_results,
             "timestamp": datetime.utcnow().isoformat()
         }
-
+    
     except ExternalServiceError:
         raise HTTPException(status_code=503, detail="External service unavailable")
     except Exception as e:
         logger.error(f"Search failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
-
 
 # ======================
 # APIFY WEBHOOK
@@ -298,7 +283,7 @@ async def apify_webhook(payload: dict):
                     except Exception as e:
                         logger.error(f"Failed to store in memory: {e}")
                 
-                # Prepare row for Google Sheets
+                # Prepare row for Google Sheets - FIXED COLUMNS
                 rows.append({
                     "timestamp": datetime.utcnow().isoformat(),
                     "asin": item.get("asin", "unknown"),
@@ -306,8 +291,8 @@ async def apify_webhook(payload: dict):
                     "ai_recommendation": ai_result.get("recommendation", "Not analyzed"),
                     "opportunity_score": ai_result.get("opportunity_score", 0),
                     "key_advantages": ai_result.get("key_advantages", "Not available"),
+                    "analysis_type": ai_result.get("analysis_type", "standard")  # FIXED: Added analysis_type
                 })
-                
                 processed_count += 1
                 
             except Exception as e:
@@ -330,7 +315,7 @@ async def apify_webhook(payload: dict):
                 logger.error(f"Google Sheets write failed: {e}")
         
         return {
-            "status": "processed", 
+            "status": "processed",
             "items": processed_count,
             "rows_written": len(rows),
             "services": {
@@ -339,11 +324,10 @@ async def apify_webhook(payload: dict):
                 "google_sheets": google_sheets_service.is_available
             }
         }
-        
+    
     except Exception as e:
         logger.error(f"Webhook processing failed: {e}", exc_info=True)
         return {"status": "error", "message": str(e)[:100]}
-
 
 async def simple_ai_analysis(product_data: dict, keyword: str) -> dict:
     """Simple AI analysis fallback."""
@@ -352,7 +336,6 @@ async def simple_ai_analysis(product_data: dict, keyword: str) -> dict:
         logger.error(f"🔍 Starting AI analysis for ASIN: {product_data.get('asin', 'unknown')}")
         
         # FIXED: Convert all values to proper types before comparison
-        
         # Convert rating to float
         rating_raw = product_data.get("product_rating", 0)
         if isinstance(rating_raw, str):
@@ -401,29 +384,32 @@ async def simple_ai_analysis(product_data: dict, keyword: str) -> dict:
             opportunity_score += 20
         elif rating >= 3.5:
             opportunity_score += 10
-            
+        
         if reviews >= 1000:
             opportunity_score += 30
         elif reviews >= 500:
             opportunity_score += 20
         elif reviews >= 100:
             opportunity_score += 10
-            
+        
         if price and price < 50:
             opportunity_score += 20
         elif price and price < 100:
             opportunity_score += 10
-            
+        
         # Cap at 100
         opportunity_score = min(opportunity_score, 100)
         
         # Generate recommendation
         if opportunity_score >= 70:
             recommendation = "High potential - Consider investing"
+            analysis_type = "high_potential"
         elif opportunity_score >= 50:
             recommendation = "Moderate potential - Worth monitoring"
+            analysis_type = "moderate_potential"
         else:
             recommendation = "Low potential - Continue research"
+            analysis_type = "low_potential"
         
         # ADDED: Log completion of analysis
         logger.error(f"✅ AI analysis completed. Score: {opportunity_score}/100 for ASIN: {product_data.get('asin', 'unknown')}")
@@ -432,14 +418,14 @@ async def simple_ai_analysis(product_data: dict, keyword: str) -> dict:
             "recommendation": recommendation,
             "opportunity_score": opportunity_score,
             "key_advantages": f"Rating: {rating}, Reviews: {reviews}, Price: {price}",
-            "analysis_type": "simple_analysis",
+            "analysis_type": analysis_type,  # FIXED: Changed from "simple_analysis" to dynamic value
             "normalized_values": {
                 "rating": rating,
                 "reviews": reviews,
                 "price": price
             }
         }
-        
+    
     except Exception as e:
         # ADDED: Log failure
         logger.error(f"❌ AI analysis failed for {product_data.get('asin', 'unknown')}: {e}")
@@ -447,14 +433,17 @@ async def simple_ai_analysis(product_data: dict, keyword: str) -> dict:
             "recommendation": "Analysis failed",
             "opportunity_score": 0,
             "key_advantages": "Not available",
-            "analysis_type": "failed"
+            "analysis_type": "failed",
+            "normalized_values": {
+                "rating": 0,
+                "reviews": 0,
+                "price": 0
+            }
         }
-
 
 # ======================
 # Debug endpoints
 # ======================
-
 @app.get("/debug/alive")
 async def debug_alive():
     """Debug endpoint to check if app is still running"""
@@ -502,7 +491,8 @@ async def debug_google_sheets():
             "keyword": "test",
             "ai_recommendation": "Test recommendation",
             "opportunity_score": 50,
-            "key_advantages": "Test advantages"
+            "key_advantages": "Test advantages",
+            "analysis_type": "test_analysis"  # FIXED: Added analysis_type
         }]
         
         result = await google_sheets_service.append_to_sheet(
@@ -510,12 +500,10 @@ async def debug_google_sheets():
             worksheet_name="Sheet1",
             data=test_data
         )
-        
         return {"success": True, "rows_appended": result}
-        
     except Exception as e:
         return {
-            "error": str(e), 
+            "error": str(e),
             "spreadsheet_id": config.GOOGLE_SHEETS_SPREADSHEET_ID,
             "worksheet_name": "Sheet1",
             "error_type": type(e).__name__
@@ -527,13 +515,9 @@ async def debug_google_sheets():
 if __name__ == "__main__":
     import os
     import uvicorn
-
-  # Set app start time for debugging
+    
+    # Set app start time for debugging
     app_start_time = time.time()
     
     port = int(os.environ.get("PORT", 8080))  # Default to 8080 for Railway
     uvicorn.run(app, host="0.0.0.0", port=port)
-
-
-
-
