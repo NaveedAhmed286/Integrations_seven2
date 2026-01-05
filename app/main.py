@@ -283,15 +283,20 @@ async def apify_webhook(payload: dict):
                     except Exception as e:
                         logger.error(f"Failed to store in memory: {e}")
                 
-                # Prepare row for Google Sheets - FIXED COLUMNS
+                # Prepare row for Google Sheets - FIXED: Now matches your sheet columns
                 rows.append({
                     "timestamp": datetime.utcnow().isoformat(),
                     "asin": item.get("asin", "unknown"),
                     "keyword": keyword,
                     "ai_recommendation": ai_result.get("recommendation", "Not analyzed"),
                     "opportunity_score": ai_result.get("opportunity_score", 0),
-                    "key_advantages": ai_result.get("key_advantages", "Not available"),
-                    "analysis_type": ai_result.get("analysis_type", "standard")  # FIXED: Added analysis_type
+                    # Separate columns instead of combined string
+                    "Product_rating": ai_result.get("normalized_values", {}).get("rating", 0.0),
+                    "count_review": ai_result.get("normalized_values", {}).get("reviews", 0),
+                    "price": ai_result.get("normalized_values", {}).get("price", 0.0),
+                    "sponsored": item.get("sponsored", False),  # Get from original Apify data
+                    "analysis_type": ai_result.get("analysis_type", "standard"),
+                    "processed_at": datetime.utcnow().isoformat()
                 })
                 processed_count += 1
                 
@@ -417,9 +422,10 @@ async def simple_ai_analysis(product_data: dict, keyword: str) -> dict:
         return {
             "recommendation": recommendation,
             "opportunity_score": opportunity_score,
+            # Keep key_advantages for backward compatibility (not used in sheets anymore)
             "key_advantages": f"Rating: {rating}, Reviews: {reviews}, Price: {price}",
-            "analysis_type": analysis_type,  # FIXED: Changed from "simple_analysis" to dynamic value
-            "normalized_values": {
+            "analysis_type": analysis_type,
+            "normalized_values": {  # Added: Clean, separated values for sheets
                 "rating": rating,
                 "reviews": reviews,
                 "price": price
@@ -484,15 +490,19 @@ async def debug_google_sheets():
         if not google_sheets_service.is_available:
             return {"error": "Google Sheets service not available"}
         
-        # Test with minimal data
+        # Test with minimal data matching your sheet columns
         test_data = [{
             "timestamp": datetime.utcnow().isoformat(),
             "asin": "TEST123",
             "keyword": "test",
             "ai_recommendation": "Test recommendation",
             "opportunity_score": 50,
-            "key_advantages": "Test advantages",
-            "analysis_type": "test_analysis"  # FIXED: Added analysis_type
+            "Product_rating": 4.5,
+            "count_review": 100,
+            "price": 29.99,
+            "sponsored": False,
+            "analysis_type": "test_analysis",
+            "processed_at": datetime.utcnow().isoformat()
         }]
         
         result = await google_sheets_service.append_to_sheet(
