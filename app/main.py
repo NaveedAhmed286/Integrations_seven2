@@ -9,7 +9,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from app.config import config
 from app.logger import logger
-from app.errors import ExternalServiceError, NormalizationError
+from app.errors import ExternalServiceError, NormalizationError, RetryExhaustedError
 from app.services.apify_service import ApifyService
 from app.services.google_service import google_sheets_service
 from app.memory_manager import memory_manager
@@ -231,12 +231,22 @@ async def apify_webhook(payload: dict):
             logger.warning("No datasetId in webhook payload")
             return {"status": "ignored", "reason": "No datasetId"}
         
+        # Add a small initial delay before trying to fetch
+        # This helps with the timing issue where datasets aren't immediately available
+        logger.info(f"Waiting 3 seconds before first dataset fetch attempt...")
+        await asyncio.sleep(3)
+        
         # Fetch the actual data from Apify dataset
         results = []
         if apify_service.is_available:
             try:
+                # The fetch_dataset method now has built-in retry logic
                 results = await apify_service.fetch_dataset(dataset_id)
-                logger.info(f"Fetched {len(results)} results from Apify dataset {dataset_id}")
+                logger.info(f"✅ Successfully fetched {len(results)} results from Apify dataset {dataset_id}")
+            except RetryExhaustedError:
+                logger.error(f"❌ All retry attempts failed for dataset {dataset_id}")
+                logger.warning("Dataset might not exist or Apify service is unavailable")
+                results = []
             except Exception as e:
                 logger.error(f"Failed to fetch from Apify dataset: {e}")
                 results = []
@@ -244,8 +254,18 @@ async def apify_webhook(payload: dict):
             logger.warning("Apify service not available, skipping data fetch")
         
         if not results:
-            logger.warning(f"No results found in dataset {dataset_id}")
-            return {"status": "empty"}
+            logger.warning(f"No results found in dataset {dataset_id} after retries")
+            
+            # Try one more manual attempt after longer delay (in case webhook was too early)
+            logger.info(f"Trying one final attempt after 30 second delay...")
+            await asyncio.sleep(30)
+            
+            try:
+                results = await apify_service.fetch_dataset(dataset_id)
+                logger.info(f"✅ Final attempt successful: fetched {len(results)} results")
+            except:
+                logger.error(f"Final attempt also failed for dataset {dataset_id}")
+                return {"status": "empty", "message": f"Could not fetch dataset {dataset_id} after all retries"}
         
         # Process each item with error handling
         rows = []
