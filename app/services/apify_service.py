@@ -203,9 +203,7 @@ class ApifyService:
     
     @async_retry(
         exceptions=(aiohttp.ClientError, asyncio.TimeoutError, ExternalServiceError),
-        max_retries=5,  # Increase retries for dataset fetching
-        initial_delay=3.0,  # Start with 3 second delay
-        max_delay=30.0  # Max 30 seconds between retries
+        max_retries=5
     )
     async def fetch_dataset(self, dataset_id: str) -> List[Dict[str, Any]]:
         """
