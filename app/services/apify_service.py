@@ -10,7 +10,7 @@ from typing import List, Dict, Any, Optional
 import json
 import time
 
-from app.errors import ExternalServiceError, NetworkError
+from app.errors import ExternalServiceError, NetworkError, RetryExhaustedError
 from app.utils.retry import async_retry
 from app.config import config
 from app.logger import logger
@@ -50,7 +50,7 @@ class ApifyService:
         if self.session:
             await self.session.close()
     
-    @async_retry(exceptions=(aiohttp.ClientError, asyncio.TimeoutError))
+    @async_retry(exceptions=(aiohttp.ClientError, asyncio.TimeoutError, ExternalServiceError))
     async def scrape_amazon_search(self, keyword: str, domain: str = "com", 
                                    max_results: int = 10) -> List[Dict[str, Any]]:
         """
@@ -157,6 +157,10 @@ class ApifyService:
             if response.status not in [200, 201]:
                 error_text = await response.text()
                 logger.error(f"Apify API error {response.status}: {error_text[:200]}")
+                
+                # Special handling for 404 - dataset not found
+                if response.status == 404:
+                    logger.warning(f"Dataset not found (404) for request. Will retry...")
                 raise ExternalServiceError(
                     f"Apify API error {response.status}: {error_text[:200]}"
                 )
@@ -197,7 +201,12 @@ class ApifyService:
             logger.error(f"Unexpected error in scrape_amazon_search: {e}", exc_info=True)
             raise ExternalServiceError(f"Failed to scrape Amazon: {str(e)}") from e
     
-    @async_retry(exceptions=(aiohttp.ClientError, asyncio.TimeoutError))
+    @async_retry(
+        exceptions=(aiohttp.ClientError, asyncio.TimeoutError, ExternalServiceError),
+        max_retries=5,  # Increase retries for dataset fetching
+        initial_delay=3.0,  # Start with 3 second delay
+        max_delay=30.0  # Max 30 seconds between retries
+    )
     async def fetch_dataset(self, dataset_id: str) -> List[Dict[str, Any]]:
         """
         Fetch dataset items from Apify.
@@ -225,7 +234,20 @@ class ApifyService:
             # FIXED: Accept both 200 and 201 status codes
             if response.status not in [200, 201]:
                 error_text = await response.text()
-                logger.error(f"Failed to fetch dataset {dataset_id}: {error_text[:200]}")
+                error_msg = f"Failed to fetch dataset {dataset_id}: {error_text[:200]}"
+                
+                # Special logging for 404 errors (dataset not found yet)
+                if response.status == 404:
+                    logger.warning(f"Dataset {dataset_id} not found yet (404). This will trigger a retry...")
+                    
+                    # Check if this is a "record-not-found" error
+                    try:
+                        error_json = json.loads(error_text)
+                        if error_json.get("error", {}).get("type") == "record-not-found":
+                            logger.info(f"Confirmed 'record-not-found' error for dataset {dataset_id}")
+                    except:
+                        pass
+                
                 raise ExternalServiceError(f"Failed to fetch dataset: {response.status}")
             
             # Parse response
@@ -251,7 +273,7 @@ class ApifyService:
             logger.error(f"Unexpected error in fetch_dataset: {e}", exc_info=True)
             raise ExternalServiceError(f"Failed to fetch dataset: {str(e)}") from e
     
-    @async_retry(exceptions=(aiohttp.ClientError, asyncio.TimeoutError))
+    @async_retry(exceptions=(aiohttp.ClientError, asyncio.TimeoutError, ExternalServiceError))
     async def get_actor_status(self, actor_id: str = None) -> Dict[str, Any]:
         """Get Apify actor status."""
         if not self.is_available:
