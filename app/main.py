@@ -257,9 +257,8 @@ async def run_and_process(request: Request):
         actor_id = "apify~web-scraper"
         run_url = f"https://api.apify.com/v2/acts/{actor_id}/runs?token={config.APIFY_API_KEY}"
         
-        # Simple but effective Page Function
-       page_function = """
-async function pageFunction(context) {
+        # Simple but effective Page Function with proper escaping
+        page_function = """async function pageFunction(context) {
     console.log('🔍 Page Function STARTING');
     
     const $ = context.jQuery;
@@ -339,18 +338,19 @@ async function pageFunction(context) {
     console.log('📊 Total products scraped:', results.length);
     console.log('🏁 Page Function COMPLETE');
     return results;
-}
-"""        
+}"""
+        
         payload = {
-    "startUrls": [{"url": f"https://www.amazon.com/s?k={keyword}"}],
-    "pageFunction": page_function,
-    "waitFor": "load",
-    "injectJQuery": True,
-    "maxPagesPerCrawl": 1,
-    "pageLoadTimeoutSecs": 120,  # Increase to 120 seconds
-    "maxResults": 50,
-    "proxyConfiguration": {"useApifyProxy": True}  # Use proxy
-}        
+            "startUrls": [{"url": f"https://www.amazon.com/s?k={keyword}"}],
+            "pageFunction": page_function,
+            "waitFor": "load",
+            "injectJQuery": True,
+            "maxPagesPerCrawl": 1,
+            "pageLoadTimeoutSecs": 120,  # Increase to 120 seconds
+            "maxResults": 50,
+            "proxyConfiguration": {"useApifyProxy": True}  # Use proxy
+        }
+        
         logger.info("📤 Starting Apify Web Scraper...")
         run_response = requests.post(run_url, json=payload, timeout=30)
         
