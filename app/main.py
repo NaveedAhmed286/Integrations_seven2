@@ -3,6 +3,7 @@ import asyncio
 import signal
 import sys
 import time
+import json
 from contextlib import asynccontextmanager
 from datetime import datetime
 from fastapi import FastAPI, Request, HTTPException
@@ -215,59 +216,158 @@ async def search_amazon(request: Request):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 # ======================
-# APIFY WEBHOOK
+# APIFY WEBHOOK (IMPROVED VERSION)
 # ======================
 @app.post("/api/v1/actor-webhook")
-async def apify_webhook(payload: dict):
-    """Handle Apify webhook."""
+async def apify_webhook(request: Request):
+    """Handle Apify webhook with improved reliability."""
     try:
-        logger.info(f"📬 Received Apify webhook: {payload}")
+        # Log request metadata
+        client_host = request.client.host if request.client else "unknown"
+        logger.info("=" * 60)
+        logger.info("🎯 WEBHOOK CALL RECEIVED")
+        logger.info(f"From: {client_host}")
         
-        dataset_id = payload.get("datasetId")
-        actor_run_id = payload.get("runId")
-        keyword = payload.get("keyword", "unknown")
+        # Get raw body for debugging
+        body = await request.body()
+        raw_text = body.decode('utf-8', errors='ignore') if body else ""
+        
+        if not raw_text.strip():
+            logger.warning("⚠️ Empty request body received")
+            return JSONResponse(
+                status_code=400,
+                content={"status": "error", "message": "Empty request body"}
+            )
+        
+        # Parse JSON
+        try:
+            payload = json.loads(raw_text)
+            logger.info(f"✅ JSON parsed. Keys: {list(payload.keys())}")
+        except json.JSONDecodeError as e:
+            logger.error(f"❌ Invalid JSON: {e}")
+            logger.debug(f"Raw text: {raw_text[:500]}")
+            return JSONResponse(
+                status_code=400,
+                content={"status": "error", "message": "Invalid JSON format"}
+            )
+        
+        # Extract dataset ID (try multiple formats)
+        dataset_id = None
+        dataset_sources = [
+            "datasetId", "defaultDatasetId", "dataset_id",
+            "default_dataset_id", "dataSetId"
+        ]
+        
+        for source in dataset_sources:
+            if source in payload:
+                dataset_id = payload[source]
+                logger.info(f"🔍 Found dataset ID in '{source}': {dataset_id}")
+                break
+        
+        # Also check nested in 'resource' if exists
+        if not dataset_id and "resource" in payload:
+            resource = payload["resource"]
+            if isinstance(resource, dict):
+                for source in dataset_sources:
+                    if source in resource:
+                        dataset_id = resource[source]
+                        logger.info(f"🔍 Found dataset ID in resource.'{source}': {dataset_id}")
+                        break
         
         if not dataset_id:
-            logger.warning("No datasetId in webhook payload")
-            return {"status": "ignored", "reason": "No datasetId"}
+            logger.error("❌ No dataset ID found in payload")
+            logger.debug(f"Full payload: {json.dumps(payload, indent=2)}")
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "status": "error",
+                    "message": "No dataset ID found",
+                    "received_keys": list(payload.keys())
+                }
+            )
         
-        # Add a small initial delay before trying to fetch
-        # This helps with the timing issue where datasets aren't immediately available
-        logger.info(f"Waiting 3 seconds before first dataset fetch attempt...")
-        await asyncio.sleep(3)
+        # Extract other info
+        run_id = payload.get("runId") or payload.get("actorRunId") or "unknown-run"
+        keyword = payload.get("keyword", "unknown-keyword")
+        status = payload.get("status", "unknown")
+        results_count = payload.get("resultsCount") or payload.get("defaultDatasetItemCount") or 0
         
-        # Fetch the actual data from Apify dataset
+        logger.info(f"📊 Processing: dataset={dataset_id}, run={run_id}")
+        logger.info(f"📊 Keyword: '{keyword}', Status: {status}, Expected items: {results_count}")
+        
+        # CRITICAL: Add delay before fetching (webhooks fire too early)
+        initial_delay = 10  # Start with 10 seconds
+        logger.info(f"⏳ Waiting {initial_delay} seconds for dataset to be ready...")
+        await asyncio.sleep(initial_delay)
+        
+        # Fetch data from Apify with retry logic
         results = []
-        if apify_service.is_available:
+        max_retries = 6
+        retry_delay = 5
+        
+        for attempt in range(1, max_retries + 1):
             try:
-                # The fetch_dataset method now has built-in retry logic
-                results = await apify_service.fetch_dataset(dataset_id)
-                logger.info(f"✅ Successfully fetched {len(results)} results from Apify dataset {dataset_id}")
-            except RetryExhaustedError:
-                logger.error(f"❌ All retry attempts failed for dataset {dataset_id}")
-                logger.warning("Dataset might not exist or Apify service is unavailable")
-                results = []
+                logger.info(f"🔄 Attempt {attempt}/{max_retries} to fetch dataset {dataset_id}")
+                
+                if attempt > 1:
+                    # Exponential backoff for retries
+                    wait_time = retry_delay * (2 ** (attempt - 2))
+                    logger.info(f"   Waiting {wait_time} seconds before retry...")
+                    await asyncio.sleep(wait_time)
+                
+                if apify_service.is_available:
+                    results = await apify_service.fetch_dataset(dataset_id)
+                    
+                    if results:
+                        logger.info(f"✅ Successfully fetched {len(results)} items on attempt {attempt}")
+                        break
+                    else:
+                        logger.warning(f"Dataset {dataset_id} exists but is empty (attempt {attempt})")
+                        continue
+                else:
+                    logger.error("❌ Apify service not available")
+                    break
+                    
             except Exception as e:
-                logger.error(f"Failed to fetch from Apify dataset: {e}")
-                results = []
-        else:
-            logger.warning("Apify service not available, skipping data fetch")
+                logger.warning(f"Attempt {attempt} failed: {str(e)[:100]}")
+                if attempt == max_retries:
+                    logger.error(f"❌ All {max_retries} attempts failed for dataset {dataset_id}")
+        
+        # If no results after retries, try direct API call as last resort
+        if not results and config.APIFY_API_KEY:
+            logger.info("🆘 Trying direct API call as last resort...")
+            try:
+                import requests
+                url = f"https://api.apify.com/v2/datasets/{dataset_id}/items"
+                headers = {
+                    "Authorization": f"Bearer {config.APIFY_API_KEY}",
+                    "Content-Type": "application/json"
+                }
+                
+                response = requests.get(url, headers=headers, timeout=30)
+                if response.status_code == 200:
+                    results = response.json()
+                    logger.info(f"✅ Direct API call fetched {len(results)} items")
+                else:
+                    logger.error(f"Direct API failed: {response.status_code} - {response.text[:200]}")
+            except Exception as e:
+                logger.error(f"Direct API call also failed: {e}")
         
         if not results:
-            logger.warning(f"No results found in dataset {dataset_id} after retries")
-            
-            # Try one more manual attempt after longer delay (in case webhook was too early)
-            logger.info(f"Trying one final attempt after 30 second delay...")
-            await asyncio.sleep(30)
-            
-            try:
-                results = await apify_service.fetch_dataset(dataset_id)
-                logger.info(f"✅ Final attempt successful: fetched {len(results)} results")
-            except:
-                logger.error(f"Final attempt also failed for dataset {dataset_id}")
-                return {"status": "empty", "message": f"Could not fetch dataset {dataset_id} after all retries"}
+            logger.warning(f"⚠️ No results found in dataset {dataset_id} after all attempts")
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "status": "no_data",
+                    "message": f"Dataset {dataset_id} is empty or not accessible",
+                    "dataset_id": dataset_id,
+                    "attempts": max_retries,
+                    "note": "Try running the actor again or check dataset in Apify Console"
+                }
+            )
         
-        # Process each item with error handling
+        # ========== PROCESS RESULTS ==========
+        logger.info(f"🔧 Processing {len(results)} items...")
         rows = []
         processed_count = 0
         
@@ -303,28 +403,27 @@ async def apify_webhook(payload: dict):
                     except Exception as e:
                         logger.error(f"Failed to store in memory: {e}")
                 
-                # Prepare row for Google Sheets - FIXED: Now matches your sheet columns
+                # Prepare row for Google Sheets
                 rows.append({
                     "timestamp": datetime.utcnow().isoformat(),
                     "asin": item.get("asin", "unknown"),
                     "keyword": keyword,
                     "ai_recommendation": ai_result.get("recommendation", "Not analyzed"),
                     "opportunity_score": ai_result.get("opportunity_score", 0),
-                    # Separate columns instead of combined string
                     "Product_rating": ai_result.get("normalized_values", {}).get("rating", 0.0),
                     "count_review": ai_result.get("normalized_values", {}).get("reviews", 0),
                     "price": ai_result.get("normalized_values", {}).get("price", 0.0),
-                    "sponsored": item.get("sponsored", False),  # Get from original Apify data
+                    "sponsored": item.get("sponsored", False),
                     "analysis_type": ai_result.get("analysis_type", "standard"),
                     "processed_at": datetime.utcnow().isoformat()
                 })
                 processed_count += 1
                 
             except Exception as e:
-                logger.error(f"Failed to process item: {e}")
-                continue  # Skip this item, continue with others
+                logger.error(f"Failed to process item {item.get('asin', 'unknown')}: {e}")
+                continue
         
-        # FIXED: Changed from append_rows to append_to_sheet
+        # Save to Google Sheets
         if rows and google_sheets_service.is_available:
             try:
                 success = await google_sheets_service.append_to_sheet(
@@ -338,21 +437,39 @@ async def apify_webhook(payload: dict):
                     logger.error("Failed to write to Google Sheets")
             except Exception as e:
                 logger.error(f"Google Sheets write failed: {e}")
+        elif rows:
+            logger.warning(f"⚠️ Google Sheets not available. {len(rows)} rows not saved.")
         
-        return {
-            "status": "processed",
-            "items": processed_count,
-            "rows_written": len(rows),
-            "services": {
-                "apify": apify_service.is_available,
-                "memory": memory_manager.initialized,
-                "google_sheets": google_sheets_service.is_available
+        logger.info(f"🎉 Webhook processing complete: {processed_count} items processed")
+        
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "success",
+                "message": f"Processed {processed_count} items",
+                "items_processed": processed_count,
+                "rows_written": len(rows),
+                "dataset_id": dataset_id,
+                "keyword": keyword,
+                "services": {
+                    "apify": apify_service.is_available,
+                    "memory": memory_manager.initialized,
+                    "google_sheets": google_sheets_service.is_available
+                },
+                "timestamp": datetime.utcnow().isoformat()
             }
-        }
+        )
     
     except Exception as e:
-        logger.error(f"Webhook processing failed: {e}", exc_info=True)
-        return {"status": "error", "message": str(e)[:100]}
+        logger.error(f"💥 Webhook processing failed: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "message": str(e)[:200],
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        )
 
 async def simple_ai_analysis(product_data: dict, keyword: str) -> dict:
     """Simple AI analysis fallback."""
@@ -360,10 +477,13 @@ async def simple_ai_analysis(product_data: dict, keyword: str) -> dict:
         # Log start of analysis
         logger.info(f"🔍 Starting AI analysis for ASIN: {product_data.get('asin', 'unknown')}")
         
+        # Extract from your data structure
+        rating_raw = product_data.get("rating") or product_data.get("product_rating") or 0
+        reviews_raw = product_data.get("reviews") or product_data.get("count_review") or 0
+        price_raw = product_data.get("price") or 0
+        
         # Convert rating to float
-        rating_raw = product_data.get("product_rating", 0)
         if isinstance(rating_raw, str):
-            # Try to extract number from string (e.g., "4.5 out of 5" -> 4.5)
             import re
             numbers = re.findall(r'\d+\.?\d*', rating_raw)
             rating = float(numbers[0]) if numbers else 0.0
@@ -373,9 +493,7 @@ async def simple_ai_analysis(product_data: dict, keyword: str) -> dict:
             rating = 0.0
         
         # Convert reviews to integer
-        reviews_raw = product_data.get("count_review", 0)
         if isinstance(reviews_raw, str):
-            # Remove commas and non-numeric characters
             import re
             numbers = re.findall(r'\d+', reviews_raw.replace(',', ''))
             reviews = int(numbers[0]) if numbers else 0
@@ -385,13 +503,10 @@ async def simple_ai_analysis(product_data: dict, keyword: str) -> dict:
             reviews = 0
         
         # Convert price to float
-        price_raw = product_data.get("price", 0)
         price = 0.0
         if price_raw:
             if isinstance(price_raw, str):
-                # Remove currency symbols, commas, and convert to float
                 import re
-                # Extract numbers with decimal points
                 numbers = re.findall(r'\d+\.?\d*', price_raw.replace(',', ''))
                 if numbers:
                     price = float(numbers[0])
@@ -440,7 +555,6 @@ async def simple_ai_analysis(product_data: dict, keyword: str) -> dict:
         return {
             "recommendation": recommendation,
             "opportunity_score": opportunity_score,
-            # Keep key_advantages for backward compatibility
             "key_advantages": f"Rating: {rating}, Reviews: {reviews}, Price: {price}",
             "analysis_type": analysis_type,
             "normalized_values": {
@@ -534,6 +648,37 @@ async def debug_google_sheets():
             "spreadsheet_id": config.GOOGLE_SHEETS_SPREADSHEET_ID,
             "worksheet_name": "Sheet1",
             "error_type": type(e).__name__
+        }
+
+# ======================
+# Webhook Debug Endpoint
+# ======================
+@app.post("/api/v1/debug-webhook")
+async def debug_webhook(request: Request):
+    """Debug endpoint to test webhook payloads."""
+    body = await request.body()
+    raw_text = body.decode('utf-8', errors='ignore') if body else ""
+    
+    logger.info("=" * 70)
+    logger.info("🐛 DEBUG WEBHOOK CALLED")
+    logger.info(f"Raw body: {raw_text}")
+    
+    try:
+        payload = json.loads(raw_text)
+        return {
+            "status": "debug",
+            "received": True,
+            "payload_keys": list(payload.keys()),
+            "dataset_id": payload.get("datasetId") or payload.get("defaultDatasetId"),
+            "payload_sample": {k: v for k, v in payload.items() if not isinstance(v, (dict, list)) or k == "sampleData"},
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except:
+        return {
+            "status": "debug",
+            "received": True,
+            "raw_body": raw_text[:500],
+            "timestamp": datetime.utcnow().isoformat()
         }
 
 # ======================
