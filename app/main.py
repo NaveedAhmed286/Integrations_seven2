@@ -256,7 +256,7 @@ async def scrape_amazon_direct(request: Request):
             )
         
         # ===== 2. START APIFY ACTOR =====
-        actor_id = "apify/web-scraper"
+        actor_id = "apify~web-scraper"
         run_url = f"https://api.apify.com/v2/acts/{actor_id}/runs?token={config.APIFY_API_KEY}"
         
         # SIMPLE page function that WORKS
