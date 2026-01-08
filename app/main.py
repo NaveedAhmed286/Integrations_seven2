@@ -257,11 +257,11 @@ async def run_and_process(request: Request):
         actor_id = "apify~web-scraper"
         run_url = f"https://api.apify.com/v2/acts/{actor_id}/runs?token={config.APIFY_API_KEY}"
         
-        # Simple but effective Page Function with proper escaping
+        # Simple but effective Page Function with proper escaping - FIXED jQuery error
         page_function = """async function pageFunction(context) {
     console.log('🔍 Page Function STARTING');
     
-    const $ = context.jQuery;
+    const $ = context.$;  // FIXED: Changed from context.jQuery to context.$
     const results = [];
     
     // CRITICAL: LONGER WAIT FOR AMAZON
