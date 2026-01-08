@@ -258,91 +258,99 @@ async def run_and_process(request: Request):
         run_url = f"https://api.apify.com/v2/acts/{actor_id}/runs?token={config.APIFY_API_KEY}"
         
         # Simple but effective Page Function
-        page_function = """
-        async function pageFunction(context) {
-            const $ = context.jQuery;
-            const results = [];
+       page_function = """
+async function pageFunction(context) {
+    console.log('🔍 Page Function STARTING');
+    
+    const $ = context.jQuery;
+    const results = [];
+    
+    // CRITICAL: LONGER WAIT FOR AMAZON
+    console.log('⏳ Waiting 10 seconds for Amazon to load...');
+    await new Promise(resolve => setTimeout(resolve, 10000));
+    
+    // Also wait for document to be ready
+    if (document.readyState !== 'complete') {
+        console.log('⏳ Waiting for document readyState...');
+        await new Promise(resolve => {
+            document.addEventListener('readystatechange', () => {
+                if (document.readyState === 'complete') resolve();
+            });
+            setTimeout(resolve, 5000); // Fallback
+        });
+    }
+    
+    console.log('✅ Page loaded, starting scrape');
+    
+    // Try multiple selectors for Amazon
+    const selectors = [
+        'div[data-asin]:not([data-asin=""])',
+        '[data-component-type="s-search-result"]',
+        '.s-result-item[data-asin]'
+    ];
+    
+    let foundElements = 0;
+    
+    for (const selector of selectors) {
+        const elements = $(selector);
+        console.log('🔍 Selector', selector, 'found:', elements.length, 'elements');
+        
+        if (elements.length > 0) {
+            foundElements = elements.length;
             
-            // Wait for products to load
-            await new Promise(resolve => setTimeout(resolve, 3000));
-            
-            // Find all product elements
-            $('div[data-asin]:not([data-asin=""])').each((index, element) => {
-                const $el = $(element);
-                const asin = $el.attr('data-asin');
-                
-                if (!asin) return;
-                
-                // Extract title
-                let title = '';
-                const titleElement = $el.find('h2 a span').first();
-                if (titleElement.length) {
-                    title = titleElement.text().trim();
-                }
-                
-                // Extract price
-                let price = '';
-                const priceElement = $el.find('.a-price-whole').first();
-                if (priceElement.length) {
-                    price = priceElement.text().trim();
-                }
-                
-                // Extract rating
-                let rating = '0.0';
-                const ratingText = $el.find('.a-icon-star-small .a-icon-alt').text();
-                if (ratingText) {
-                    const match = ratingText.match(/(\\d+\\.\\d)/);
-                    if (match) rating = match[1];
-                }
-                
-                // Extract reviews
-                let reviews = '0';
-                const reviewsText = $el.find('.a-size-small .a-link-normal').text();
-                if (reviewsText) {
-                    const match = reviewsText.match(/(\\d+)/);
-                    if (match) reviews = match[1];
-                }
-                
-                // Check if sponsored
-                const sponsored = $el.find('.s-sponsored-label-text').length > 0;
-                
-                // Extract URL
-                let url = '';
-                const link = $el.find('h2 a').attr('href');
-                if (link) {
-                    url = link.startsWith('http') ? link : 'https://www.amazon.com' + link;
-                }
-                
-                if (title) {
-                    results.push({
-                        asin: asin,
-                        title: title.substring(0, 200),
-                        price: price,
-                        rating: rating,
-                        reviews: reviews,
-                        url: url,
-                        sponsored: sponsored,
-                        position: index + 1,
-                        scraped_at: new Date().toISOString()
-                    });
+            elements.each((index, element) => {
+                if (index < 50) { // Limit to 50 items
+                    const $el = $(element);
+                    const asin = $el.attr('data-asin');
+                    
+                    if (!asin) return;
+                    
+                    // Extract title
+                    const title = $el.find('h2 a span').first().text().trim();
+                    
+                    // Extract price
+                    const price = $el.find('.a-price-whole').first().text().trim() || 'N/A';
+                    
+                    // Extract rating
+                    let rating = '0.0';
+                    const ratingText = $el.find('.a-icon-star-small .a-icon-alt').text();
+                    if (ratingText) {
+                        const match = ratingText.match(/(\\d+\\.\\d)/);
+                        if (match) rating = match[1];
+                    }
+                    
+                    if (title) {
+                        results.push({
+                            asin: asin,
+                            title: title.substring(0, 200),
+                            price: price,
+                            rating: rating,
+                            reviews: '0',
+                            position: index + 1,
+                            scraped_at: new Date().toISOString()
+                        });
+                    }
                 }
             });
-            
-            console.log('Scraped', results.length, 'products');
-            return results;
+            break; // Use first selector that works
         }
-        """
-        
+    }
+    
+    console.log('📊 Total products scraped:', results.length);
+    console.log('🏁 Page Function COMPLETE');
+    return results;
+}
+"""        
         payload = {
-            "startUrls": [{"url": f"https://www.amazon.com/s?k={keyword}"}],
-            "pageFunction": page_function,
-            "waitFor": "domcontentloaded",
-            "injectJQuery": True,
-            "maxPagesPerCrawl": 1,
-            "pageLoadTimeoutSecs": 60,
-            "maxResults": 50
-        }
-        
+    "startUrls": [{"url": f"https://www.amazon.com/s?k={keyword}"}],
+    "pageFunction": page_function,
+    "waitFor": "load",
+    "injectJQuery": True,
+    "maxPagesPerCrawl": 1,
+    "pageLoadTimeoutSecs": 120,  # Increase to 120 seconds
+    "maxResults": 50,
+    "proxyConfiguration": {"useApifyProxy": True}  # Use proxy
+}        
         logger.info("📤 Starting Apify Web Scraper...")
         run_response = requests.post(run_url, json=payload, timeout=30)
         
