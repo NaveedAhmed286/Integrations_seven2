@@ -79,11 +79,28 @@ async def health_check():
 # ======================
 @app.post("/api/v1/actor-webhook")
 async def apify_webhook(request: Request):
-    # 1. Validate token in Authorization header
+    # 1. Validate token in Authorization header - FLEXIBLE VERSION
     auth_header = request.headers.get("Authorization", "")
-    if auth_header != f"Bearer {WEBHOOK_SECRET_TOKEN}":
-        logger.warning(f"❌ Unauthorized webhook attempt. Header: {auth_header}")
+    
+    # Extract token from header (supports both "Bearer <token>" and "<token>" formats)
+    received_token = None
+    
+    if auth_header.startswith("Bearer "):
+        received_token = auth_header[7:]  # Remove "Bearer " prefix
+        logger.info(f"✅ Received Authorization header with 'Bearer' prefix")
+    else:
+        received_token = auth_header  # Assume it's just the token
+        logger.info(f"✅ Received Authorization header without 'Bearer' prefix")
+    
+    # Compare with expected token
+    if received_token != WEBHOOK_SECRET_TOKEN:
+        logger.warning(f"❌ Unauthorized webhook attempt.")
+        logger.warning(f"❌ Full Authorization header: '{auth_header}'")
+        logger.warning(f"❌ Extracted token: '{received_token}'")
+        logger.warning(f"❌ Expected token: '{WEBHOOK_SECRET_TOKEN}'")
         raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    logger.info(f"✅ Authorization successful!")
 
     # 2. Parse JSON payload
     try:
@@ -92,10 +109,61 @@ async def apify_webhook(request: Request):
         logger.error(f"❌ Failed to parse webhook payload: {e}")
         raise HTTPException(status_code=400, detail="Invalid JSON payload")
 
+    # === CRITICAL DEBUG: Log FULL Apify payload structure ===
+    logger.info("=" * 70)
+    logger.info("🔬 DEBUG: FULL APIFY WEBHOOK PAYLOAD STRUCTURE:")
+    logger.info(json.dumps(payload, indent=2))
+    logger.info("🔬 DEBUG: Checking for datasetId in all possible locations:")
+    
+    # Check all possible locations
+    if "datasetId" in payload:
+        logger.info(f"   ✅ Found: payload.datasetId = {payload.get('datasetId')}")
+    else:
+        logger.info("   ❌ Not found: payload.datasetId")
+    
+    if "resource" in payload:
+        resource = payload.get("resource", {})
+        if "defaultDatasetId" in resource:
+            logger.info(f"   ✅ Found: payload.resource.defaultDatasetId = {resource.get('defaultDatasetId')}")
+        else:
+            logger.info("   ❌ Not found: payload.resource.defaultDatasetId")
+            
+        # Also check other possible resource fields
+        logger.info(f"   🔍 payload.resource keys: {list(resource.keys())}")
+    
+    # Also check other possible locations
+    logger.info(f"   🔍 All top-level payload keys: {list(payload.keys())}")
+    logger.info("=" * 70)
+    # === END DEBUG ===
+
     logger.info(f"📬 Received webhook event: {payload.get('eventType', 'unknown')}")
 
-    # 3. Extract dataset and run info
-    dataset_id = payload.get("datasetId") or payload.get("resource", {}).get("defaultDatasetId")
+    # 3. Extract dataset and run info - ENHANCED VERSION
+    dataset_id = None
+    
+    # Try multiple possible locations
+    possible_dataset_paths = [
+        payload.get("datasetId"),
+        payload.get("resource", {}).get("defaultDatasetId"),
+        payload.get("resource", {}).get("datasetId"),
+        payload.get("data", {}).get("datasetId"),
+        payload.get("details", {}).get("datasetId"),
+        payload.get("runId"),  # Sometimes runId is used to fetch data
+    ]
+    
+    for i, dataset in enumerate(possible_dataset_paths):
+        if dataset:
+            dataset_id = dataset
+            logger.info(f"✅ Found datasetId at position {i}: {dataset_id}")
+            break
+    
+    # If still not found, check the entire payload structure
+    if not dataset_id:
+        logger.error("❌ Could not find datasetId in any expected location")
+        # Log the entire payload for debugging
+        logger.error(f"❌ Full payload structure: {json.dumps(payload, indent=2)}")
+        return {"status": "error", "message": "No datasetId found in webhook payload"}
+
     run_id = payload.get("runId") or payload.get("resource", {}).get("id")
     keyword = payload.get("keyword") or payload.get("customData", {}).get("keyword", "unknown")
 
