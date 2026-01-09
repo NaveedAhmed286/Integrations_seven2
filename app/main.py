@@ -187,26 +187,89 @@ async def apify_webhook(request: Request):
         logger.error(f"❌ Dataset fetch exception: {e}")
         return {"status": "error", "message": str(e)}
 
-    # 5. Process items (simple AI/score calculation)
+    # 5. Process items (simple AI/score calculation) - FIXED VERSION WITH UPDATED COLUMNS
     rows = []
+    processed_count = 0
+    error_count = 0
+    
     for idx, item in enumerate(items[:100]):  # limit to 100 items
         try:
             asin = item.get("asin", "unknown")
-            price = item.get("price") or 0
-            rating = item.get("rating") or 0
-            reviews = item.get("reviews") or 0
+            
+            # SAFELY CONVERT PRICE, RATING, REVIEWS TO NUMBERS
+            # Handle price conversion
+            price_raw = item.get("price")
+            price = 0
+            if price_raw is not None:
+                try:
+                    # Remove currency symbols and commas, then convert to float
+                    if isinstance(price_raw, str):
+                        price_str = price_raw.replace('$', '').replace(',', '').strip()
+                        price = float(price_str) if price_str else 0
+                    else:
+                        price = float(price_raw)
+                except (ValueError, TypeError):
+                    price = 0
+                    logger.debug(f"⚠️ Could not convert price: {price_raw}")
+            
+            # Handle rating conversion
+            rating_raw = item.get("rating")
+            rating = 0
+            if rating_raw is not None:
+                try:
+                    if isinstance(rating_raw, str):
+                        rating_str = rating_raw.replace(',', '').strip()
+                        rating = float(rating_str) if rating_str else 0
+                    else:
+                        rating = float(rating_raw)
+                except (ValueError, TypeError):
+                    rating = 0
+                    logger.debug(f"⚠️ Could not convert rating: {rating_raw}")
+            
+            # Handle reviews conversion
+            reviews_raw = item.get("reviews")
+            reviews = 0
+            if reviews_raw is not None:
+                try:
+                    if isinstance(reviews_raw, str):
+                        # Remove commas and non-numeric characters, keep only digits
+                        reviews_str = ''.join(filter(str.isdigit, reviews_raw))
+                        reviews = int(reviews_str) if reviews_str else 0
+                    else:
+                        reviews = int(float(reviews_raw))
+                except (ValueError, TypeError):
+                    reviews = 0
+                    logger.debug(f"⚠️ Could not convert reviews: {reviews_raw}")
 
+            # Calculate opportunity score
             opportunity_score = 0
-            if rating >= 4.5: opportunity_score += 30
-            elif rating >= 4: opportunity_score += 20
-            elif rating >= 3.5: opportunity_score += 10
-            if reviews >= 1000: opportunity_score += 30
-            elif reviews >= 500: opportunity_score += 20
-            elif reviews >= 100: opportunity_score += 10
-            if price and price < 50: opportunity_score += 20
-            elif price and price < 100: opportunity_score += 10
+            
+            # Rating scoring
+            if rating >= 4.5: 
+                opportunity_score += 30
+            elif rating >= 4: 
+                opportunity_score += 20
+            elif rating >= 3.5: 
+                opportunity_score += 10
+            
+            # Reviews scoring
+            if reviews >= 1000: 
+                opportunity_score += 30
+            elif reviews >= 500: 
+                opportunity_score += 20
+            elif reviews >= 100: 
+                opportunity_score += 10
+            
+            # Price scoring
+            if price > 0:  # Only score if price exists
+                if price < 50: 
+                    opportunity_score += 20
+                elif price < 100: 
+                    opportunity_score += 10
+            
             opportunity_score = min(opportunity_score, 100)
 
+            # Generate recommendation
             if opportunity_score >= 70:
                 recommendation = "High potential - Consider investing"
             elif opportunity_score >= 50:
@@ -214,6 +277,7 @@ async def apify_webhook(request: Request):
             else:
                 recommendation = "Low potential - Continue research"
 
+            # UPDATED COLUMNS to match your Google Sheets structure
             row_data = {
                 "timestamp": datetime.utcnow().isoformat(),
                 "asin": asin,
@@ -223,13 +287,23 @@ async def apify_webhook(request: Request):
                 "Product_rating": rating,
                 "count_review": reviews,
                 "price": price,
-                "run_id": run_id,
-                "dataset_id": dataset_id
+                "sponsored": item.get("sponsored", False),  # Added to match sheet
+                "analysis_type": "low_potential" if opportunity_score < 50 else "medium_potential" if opportunity_score < 70 else "high_potential",  # Added to match sheet
+                "processed_at": datetime.utcnow().isoformat()  # Added to match sheet
+                # Removed: "run_id" and "dataset_id" as they're not in your sheet columns
             }
             rows.append(row_data)
+            processed_count += 1
+            
         except Exception as e:
+            error_count += 1
             logger.warning(f"⚠️ Failed to process item {idx}: {e}")
+            # Log minimal debug info
+            logger.debug(f"⚠️ Item data: {{'asin': {item.get('asin', 'unknown')}, 'price': {item.get('price')}, 'rating': {item.get('rating')}, 'reviews': {item.get('reviews')}}}")
             continue
+
+    # Log processing summary
+    logger.info(f"📊 Processing summary: {processed_count} items processed successfully, {error_count} items failed")
 
     # 6. Write to Google Sheets
     sheets_success = False
@@ -248,7 +322,8 @@ async def apify_webhook(request: Request):
     return {
         "status": "success",
         "items_fetched": len(items),
-        "items_processed": len(rows),
+        "items_processed": processed_count,
+        "items_failed": error_count,
         "rows_written": len(rows) if sheets_success else 0,
         "dataset_id": dataset_id,
         "run_id": run_id,
