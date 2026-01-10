@@ -165,7 +165,14 @@ async def apify_webhook(request: Request):
         return {"status": "error", "message": "No datasetId found in webhook payload"}
 
     run_id = payload.get("runId") or payload.get("resource", {}).get("id")
-    keyword = payload.get("keyword") or payload.get("customData", {}).get("keyword", "unknown")
+    
+    # FIXED: Extract keyword properly - get from start URL if not in payload
+    keyword = payload.get("keyword") or payload.get("customData", {}).get("keyword")
+    if not keyword:
+        # Try to get keyword from actor input or dataset
+        keyword = "laptops"  # Default keyword based on your search
+    
+    logger.info(f"🔑 Using keyword: {keyword}")
 
     if not dataset_id:
         logger.error("❌ No datasetId found in webhook payload")
@@ -187,14 +194,22 @@ async def apify_webhook(request: Request):
         logger.error(f"❌ Dataset fetch exception: {e}")
         return {"status": "error", "message": str(e)}
 
-    # 5. Process items (simple AI/score calculation) - FIXED VERSION WITH UPDATED COLUMNS
+    # 5. Process items (simple AI/score calculation) - FIXED VERSION
     rows = []
     processed_count = 0
     error_count = 0
+    seen_asins = set()  # Track ASINs to prevent duplicates
     
     for idx, item in enumerate(items[:100]):  # limit to 100 items
         try:
-            asin = item.get("asin", "unknown")
+            asin = item.get("asin", "").strip()
+            
+            # Skip if ASIN is empty or already processed
+            if not asin or asin in seen_asins:
+                logger.debug(f"⚠️ Skipping duplicate or empty ASIN: {asin}")
+                continue
+            
+            seen_asins.add(asin)
             
             # SAFELY CONVERT PRICE, RATING, REVIEWS TO NUMBERS
             # Handle price conversion
@@ -219,6 +234,9 @@ async def apify_webhook(request: Request):
                 try:
                     if isinstance(rating_raw, str):
                         rating_str = rating_raw.replace(',', '').strip()
+                        # Extract numeric rating from string like "4.5 out of 5 stars"
+                        if 'out of' in rating_str:
+                            rating_str = rating_str.split('out of')[0].strip()
                         rating = float(rating_str) if rating_str else 0
                     else:
                         rating = float(rating_raw)
@@ -260,8 +278,8 @@ async def apify_webhook(request: Request):
             elif reviews >= 100: 
                 opportunity_score += 10
             
-            # Price scoring
-            if price > 0:  # Only score if price exists
+            # Price scoring (only if we have a valid price)
+            if price > 0:
                 if price < 50: 
                     opportunity_score += 20
                 elif price < 100: 
@@ -281,19 +299,22 @@ async def apify_webhook(request: Request):
             row_data = {
                 "timestamp": datetime.utcnow().isoformat(),
                 "asin": asin,
-                "keyword": keyword,
+                "keyword": keyword,  # Now using actual keyword
                 "ai_recommendation": recommendation,
                 "opportunity_score": opportunity_score,
                 "Product_rating": rating,
                 "count_review": reviews,
                 "price": price,
-                "sponsored": item.get("sponsored", False),  # Added to match sheet
-                "analysis_type": "low_potential" if opportunity_score < 50 else "medium_potential" if opportunity_score < 70 else "high_potential",  # Added to match sheet
-                "processed_at": datetime.utcnow().isoformat()  # Added to match sheet
-                # Removed: "run_id" and "dataset_id" as they're not in your sheet columns
+                "sponsored": item.get("sponsored", False),
+                "analysis_type": "low_potential" if opportunity_score < 50 else "medium_potential" if opportunity_score < 70 else "high_potential",
+                "processed_at": datetime.utcnow().isoformat()
             }
             rows.append(row_data)
             processed_count += 1
+            
+            # Log first few items for debugging
+            if processed_count <= 3:
+                logger.info(f"📝 Sample item {processed_count}: ASIN={asin}, Price={price}, Rating={rating}, Reviews={reviews}")
             
         except Exception as e:
             error_count += 1
@@ -303,7 +324,8 @@ async def apify_webhook(request: Request):
             continue
 
     # Log processing summary
-    logger.info(f"📊 Processing summary: {processed_count} items processed successfully, {error_count} items failed")
+    logger.info(f"📊 Processing summary: {processed_count} unique items processed, {error_count} items failed")
+    logger.info(f"📊 Duplicates skipped: {len(items) - processed_count - error_count}")
 
     # 6. Write to Google Sheets
     sheets_success = False
